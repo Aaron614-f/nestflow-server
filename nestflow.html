@@ -1,0 +1,2549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NestFlow — Steel Cutting & Nesting</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- SVGnest true-shape nesting engine -->
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/clipper.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/geometryutil.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/placementworker.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/parallel.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/svgparser.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/svgnest.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#f2f0ec;
+  --surface:#ffffff;
+  --surface2:#edebe7;
+  --border:#d6d4ce;
+  --border2:#b8b6b0;
+  --text:#1c1a17;
+  --text2:#5a5850;
+  --text3:#9a9890;
+  --accent:#1c1a17;
+  --green:#165c30;
+  --green-bg:#e4f2ea;
+  --amber:#7a4f00;
+  --amber-bg:#fef3d8;
+  --red:#991818;
+  --red-bg:#fde8e8;
+  --blue:#1a4a96;
+  --blue-bg:#e6edf8;
+  --r:6px;--rl:10px;
+}
+
+html,body{height:100%;overflow:hidden}
+body{font-family:'IBM Plex Sans',sans-serif;font-size:14px;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+
+/* ── Layout ── */
+.shell{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+/* Titlebar */
+.titlebar{
+  height:50px;background:var(--text);display:flex;align-items:center;
+  padding:0 20px;gap:14px;flex-shrink:0;
+}
+.logo-mark{
+  width:30px;height:30px;background:#fff;color:var(--text);
+  font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;
+  display:flex;align-items:center;justify-content:center;border-radius:5px;flex-shrink:0;
+}
+.app-title{font-family:'IBM Plex Mono',monospace;font-size:13px;color:#fff;letter-spacing:.05em}
+.title-sep{color:#444;margin:0 4px}
+.job-wrap{display:flex;align-items:center;gap:8px;margin-left:auto}
+.job-lbl{font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.07em}
+.job-input{
+  background:transparent;border:none;border-bottom:1px solid #444;
+  color:#fff;font-family:'IBM Plex Mono',monospace;font-size:13px;
+  padding:2px 6px;width:130px;
+}
+.job-input:focus{outline:none;border-bottom-color:#888}
+
+/* Step nav */
+.stepbar{
+  height:46px;background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:stretch;flex-shrink:0;
+}
+.step{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
+  background:none;border:none;border-bottom:2px solid transparent;
+  font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:var(--text3);
+  cursor:default;padding:0 8px;white-space:nowrap;transition:color .15s;
+}
+.step.done{color:var(--text2);cursor:pointer}
+.step.done:hover{color:var(--text)}
+.step.active{color:var(--text);font-weight:500;border-bottom-color:var(--text)}
+.step-num{
+  font-family:'IBM Plex Mono',monospace;font-size:11px;
+  width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  border:1px solid currentColor;flex-shrink:0;
+}
+.step.done .step-num{background:var(--text);color:#fff;border-color:var(--text)}
+.step.active .step-num{background:var(--text);color:#fff;border-color:var(--text)}
+
+/* Main scroll area */
+.main{flex:1;overflow-y:auto;overflow-x:hidden}
+.screen{display:none;padding:22px 24px;min-height:calc(100vh - 96px);flex-direction:column;gap:16px}
+.screen.active{display:flex}
+
+/* ── Shared components ── */
+.slabel{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rl);padding:16px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+
+/* Drop zone */
+.dropzone{
+  border:1.5px dashed var(--border2);border-radius:var(--rl);
+  padding:28px 20px;text-align:center;cursor:pointer;background:var(--surface);
+  transition:border-color .15s,background .15s;display:flex;flex-direction:column;align-items:center;gap:6px;
+}
+.dropzone:hover{border-color:var(--text2);background:var(--surface2)}
+.dropzone.loaded{border:1.5px solid var(--green);background:var(--green-bg)}
+.dz-icon{font-size:26px;margin-bottom:2px}
+.dz-title{font-size:14px;font-weight:500}
+.dz-sub{font-size:12px;color:var(--text3)}
+
+/* Stats */
+.stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px}
+.stat-lbl{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.stat-val{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:500}
+.stat-val.g{color:var(--green)}.stat-val.a{color:var(--amber)}.stat-val.r{color:var(--red)}
+
+/* Table */
+.tbl-wrap{overflow-x:auto;border-radius:var(--rl);border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface)}
+th{
+  text-align:left;font-size:11px;font-weight:500;color:var(--text3);
+  text-transform:uppercase;letter-spacing:.05em;
+  padding:10px 12px;border-bottom:1px solid var(--border);background:var(--surface2);
+  white-space:nowrap;
+}
+td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--surface2)}
+tr.row-review td{background:#fffbef!important}
+tr.row-review:hover td{background:#fff6e0!important}
+tr.row-unmatched td{background:#fff5f5!important}
+tr.row-unmatched:hover td{background:#ffecec!important}
+.mono{font-family:'IBM Plex Mono',monospace;font-size:12px}
+.fw5{font-weight:500}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:500;font-family:'IBM Plex Mono',monospace;white-space:nowrap}
+.bg{background:var(--green-bg);color:var(--green)}
+.ba{background:var(--amber-bg);color:var(--amber)}
+.br{background:var(--red-bg);color:var(--red)}
+.bb{background:var(--blue-bg);color:var(--blue)}
+
+/* Buttons */
+.btn{padding:8px 16px;border-radius:var(--r);font-size:13px;cursor:pointer;border:1px solid var(--border2);background:var(--surface);color:var(--text);font-family:'IBM Plex Sans',sans-serif;transition:background .12s,border-color .12s}
+.btn:hover{background:var(--surface2);border-color:var(--text2)}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+.btn-primary{background:var(--text);color:#fff;border-color:transparent}
+.btn-primary:hover{background:#333}
+.btn-ghost{background:transparent;border-color:transparent;color:var(--text2)}
+.btn-ghost:hover{background:var(--surface2);border-color:var(--border)}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-saved{border-color:var(--green)!important;color:var(--green)!important;background:var(--green-bg)!important}
+
+/* Bottom bar */
+.bbar{margin-top:auto;padding:14px 0 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-shrink:0}
+.bbar-right{display:flex;gap:8px;align-items:center}
+.muted{color:var(--text2)}.muted-sm{font-size:12px;color:var(--text3)}
+.warn-txt{font-size:13px;color:var(--amber)}
+.ok-txt{font-size:13px;color:var(--green);font-weight:500}
+
+/* Inputs */
+.sel{padding:5px 9px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface);color:var(--text);font-size:13px;font-family:'IBM Plex Mono',monospace}
+.qty-inp{width:58px;text-align:center;font-size:13px;font-weight:500;font-family:'IBM Plex Mono',monospace;padding:4px 6px;border:1px solid var(--border2);border-radius:var(--r);background:var(--surface);color:var(--text)}
+.qty-inp:focus{outline:none;border-color:var(--text2)}
+
+/* Notifications */
+.notif{border-radius:var(--r);padding:9px 14px;font-size:13px}
+.notif-blue{background:var(--blue-bg);color:var(--blue);border:1px solid #c0d0f0}
+.notif-red{background:var(--red-bg);color:var(--red);border:1px solid #f0c0c0}
+
+/* ── Nest screen ── */
+.group-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.gtab{
+  padding:6px 14px;border-radius:var(--r);border:1px solid var(--border);
+  background:var(--surface);font-size:12px;cursor:pointer;color:var(--text2);
+  font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;gap:6px;
+}
+.gtab:hover{border-color:var(--text2);color:var(--text)}
+.gtab.active{background:var(--text);color:#fff;border-color:var(--text)}
+.gtab-ct{background:rgba(255,255,255,.18);border-radius:3px;padding:1px 5px;font-size:10px}
+.gtab:not(.active) .gtab-ct{background:var(--surface2);color:var(--text3)}
+
+.sheet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.sheet-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rl);padding:10px}
+.sheet-canvas{position:relative;border:1px solid var(--border2);border-radius:4px;background:var(--surface2);overflow:hidden}
+.part-block{position:absolute;border:1px solid rgba(0,0,0,.12);border-radius:2px;cursor:default;transition:filter .1s}
+.part-block:hover{filter:brightness(.88);z-index:2}
+.util-tag{position:absolute;bottom:5px;right:6px;font-size:11px;font-weight:500;color:var(--green);font-family:'IBM Plex Mono',monospace;background:rgba(255,255,255,.88);padding:1px 5px;border-radius:3px}
+.sheet-foot{display:flex;justify-content:space-between;margin-top:6px}
+.sheet-num{font-size:12px;font-weight:500;font-family:'IBM Plex Mono',monospace}
+.sheet-ct{font-size:11px;color:var(--text3)}
+
+.legend{display:flex;flex-wrap:wrap;gap:10px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace}
+.legend-sw{width:12px;height:12px;border-radius:2px;border:1px solid rgba(0,0,0,.1);flex-shrink:0}
+
+.group-ctrl{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);flex-wrap:wrap}
+.group-ctrl-label{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;min-width:160px}
+.group-ctrl-status{font-size:11px;color:var(--text3);margin-left:auto}
+.group-ctrl.active-group{border-color:var(--text2);background:var(--surface2)}
+.spinner{width:28px;height:28px;border:2px solid var(--border2);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Export screen ── */
+.export-file{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);margin-bottom:7px}
+.ef-info{flex:1;min-width:0}
+.ef-name{font-size:12px;font-weight:500;font-family:'IBM Plex Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ef-meta{font-size:11px;color:var(--text3);margin-top:2px}
+.mat-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px}
+.mat-row:last-child{border-bottom:none}
+.mat-total{border-top:1px solid var(--border2);padding-top:9px;margin-top:4px;font-weight:500}
+
+/* Loaded files row */
+.file-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface2)}
+.file-row+.file-row{margin-top:6px}
+.fr-info{flex:1}.fr-name{font-size:13px;font-weight:500}.fr-meta{font-size:11px;color:var(--text3);margin-top:2px}
+
+/* Toolbar row */
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:8px}
+
+/* Tooltip on part hover */
+.part-block[data-tip]:hover::after{
+  content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);
+  background:var(--text);color:#fff;font-size:11px;padding:3px 7px;border-radius:4px;white-space:nowrap;z-index:10;pointer-events:none;
+  font-family:'IBM Plex Mono',monospace;
+}
+
+/* ── DXF viewer links ── */
+.dxf-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dxf-fname{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--text2)}
+.dxf-link{font-size:11px;padding:2px 7px;border-radius:3px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer;text-decoration:none;white-space:nowrap;font-family:'IBM Plex Sans',sans-serif}
+.dxf-link:hover{background:var(--surface2);color:var(--text);border-color:var(--text2)}
+.dxf-link.info-btn{border-color:var(--border2);color:var(--text2);background:var(--surface)}
+.dxf-link.info-btn:hover{background:var(--surface2);color:var(--text)}
+
+/* ── Part info popup ── */
+.info-popup{
+  display:none;position:fixed;z-index:2000;
+  background:var(--surface);border:1px solid var(--border2);
+  border-radius:var(--rl);box-shadow:0 8px 32px rgba(0,0,0,.18);
+  min-width:260px;max-width:320px;
+  padding:0;overflow:hidden;
+}
+.info-popup.open{display:block}
+.info-popup-header{
+  background:var(--text);color:#fff;
+  padding:10px 14px;display:flex;justify-content:space-between;align-items:center;
+}
+.info-popup-title{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:500}
+.info-popup-close{background:none;border:none;color:#aaa;font-size:16px;cursor:pointer;padding:0;line-height:1}
+.info-popup-close:hover{color:#fff}
+.info-popup-body{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.info-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13px;border-bottom:1px solid var(--border);padding-bottom:7px}
+.info-row:last-child{border-bottom:none;padding-bottom:0}
+.info-lbl{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.info-val{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:500;text-align:right}
+.info-val.highlight{color:var(--blue);font-size:15px}
+
+/* ── Job history ── */
+.history-empty{text-align:center;padding:40px;color:var(--text3);font-size:14px}
+.history-job{background:var(--surface);border:1px solid var(--border);border-radius:var(--rl);padding:14px 16px;margin-bottom:10px}
+.history-job:last-child{margin-bottom:0}
+.hj-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.hj-name{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:500}
+.hj-date{font-size:12px;color:var(--text3);margin-left:auto}
+.hj-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.hj-stat{background:var(--surface2);border-radius:var(--r);padding:8px 10px}
+.hj-stat-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.hj-stat-val{font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:500}
+.hj-groups{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.hj-group{font-size:11px;font-family:'IBM Plex Mono',monospace;padding:2px 8px;border-radius:3px;background:var(--surface2);border:1px solid var(--border);color:var(--text2)}
+.hj-actions{display:flex;gap:6px}
+.hj-del{color:var(--red)!important;border-color:var(--red-bg)!important}
+
+
+/* ── DXF Preview modal ── */
+.modal-overlay{
+  display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;
+  align-items:center;justify-content:center;
+}
+.modal-overlay.open{display:flex}
+.modal{
+  background:var(--surface);border-radius:var(--rl);
+  width:min(820px,95vw);max-height:90vh;display:flex;flex-direction:column;
+  box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden;
+}
+.modal-header{
+  display:flex;align-items:center;gap:10px;padding:14px 18px;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.modal-title{font-size:14px;font-weight:500;font-family:'IBM Plex Mono',monospace;flex:1}
+.modal-meta{font-size:12px;color:var(--text3)}
+.modal-close{background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);padding:0 4px;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-body{flex:1;overflow:auto;padding:20px;display:flex;align-items:center;justify-content:center;background:var(--surface2)}
+.modal-footer{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.modal-info{font-size:12px;color:var(--text3);font-family:'IBM Plex Mono',monospace}
+
+/* SVG viewer canvas */
+#dxf-svg-wrap{background:#fff;border:1px solid var(--border);border-radius:4px;max-width:100%;overflow:auto}
+#dxf-svg-wrap svg{display:block}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Titlebar -->
+  <div class="titlebar">
+    <div class="logo-mark">NF</div>
+    <span class="app-title">NestFlow</span>
+    <span class="title-sep">—</span>
+    <span style="font-size:13px;color:#aaa">Steel cutting &amp; nesting</span>
+    <div class="job-wrap">
+      <span class="job-lbl">Job</span>
+      <input class="job-input" id="job-name" value="JOB-0042">
+    </div>
+    <button class="icon-btn" title="Job history" onclick="showJobHistory()" style="margin-left:8px;display:flex;align-items:center;gap:5px;font-size:12px;color:#ccc">
+      📁 History
+    </button>
+    <button class="icon-btn" title="Server settings" onclick="showServerSettings()" style="display:flex;align-items:center;gap:5px;font-size:12px;color:#ccc">
+      ⚙ Server
+    </button>
+  </div>
+
+  <!-- Step nav -->
+  <nav class="stepbar" id="stepbar">
+    <button class="step active" onclick="tryGo(0)"><span class="step-num">1</span><span>Import</span></button>
+    <button class="step" onclick="tryGo(1)"><span class="step-num">2</span><span>Match &amp; review</span></button>
+    <button class="step" onclick="tryGo(2)"><span class="step-num">3</span><span>Nest</span></button>
+    <button class="step" onclick="tryGo(3)"><span class="step-num">4</span><span>Export</span></button>
+  </nav>
+
+  <div class="main">
+
+    <!-- ══════════════════════════════════════════
+         SCREEN 1 · IMPORT
+    ══════════════════════════════════════════ -->
+    <div class="screen active" id="s0">
+      <div class="two-col">
+        <div>
+          <p class="slabel">Cut list from supplier</p>
+          <div class="dropzone" id="dz-cl" onclick="document.getElementById('inp-cl').click()">
+            <div class="dz-icon">📋</div>
+            <p class="dz-title">Click to open cut list</p>
+            <p class="dz-sub">Supports .xlsx, .xls, .csv</p>
+          </div>
+          <input type="file" id="inp-cl" accept=".xlsx,.xls,.csv" style="display:none" onchange="loadCutList(event)">
+        </div>
+        <div>
+          <p class="slabel">DXF parts folder</p>
+          <div class="dropzone" id="dz-dxf" onclick="document.getElementById('inp-dxf').click()">
+            <div class="dz-icon">📁</div>
+            <p class="dz-title">Click to select DXF files</p>
+            <p class="dz-sub">Select all your .dxf files at once</p>
+          </div>
+          <input type="file" id="inp-dxf" accept=".dxf,.dwg" multiple style="display:none" onchange="loadDxf(event)">
+        </div>
+      </div>
+
+      <div id="import-files" style="display:none" class="card">
+        <p class="slabel" style="margin-bottom:10px">Loaded files</p>
+        <div id="import-files-list"></div>
+      </div>
+
+      <div id="import-notif" style="display:none"></div>
+
+      <div class="bbar">
+        <button class="btn btn-ghost" onclick="loadDemo()">Load demo data</button>
+        <div class="bbar-right">
+          <span class="muted-sm" id="import-hint">Import both files to continue</span>
+          <button class="btn btn-primary" id="btn-match" disabled onclick="goMatch()">Run auto-match →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         SCREEN 2 · MATCH & REVIEW
+    ══════════════════════════════════════════ -->
+    <div class="screen" id="s1">
+      <div class="stat-grid" id="match-stats"></div>
+      <div class="tbl-wrap">
+        <table id="match-table">
+          <thead>
+            <tr>
+              <th>Mark</th><th>Profile</th><th>Material</th><th>Thickness</th>
+              <th style="text-align:center">Qty</th><th>DXF file</th>
+              <th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="match-tbody"></tbody>
+        </table>
+      </div>
+      <div class="bbar">
+        <span id="match-hint" class="warn-txt"></span>
+        <div class="bbar-right">
+          <button class="btn" onclick="goTo(0)">← Back</button>
+          <button class="btn btn-primary" id="btn-nest" disabled onclick="goNest()">Run nesting →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         SCREEN 3 · NEST PREVIEW
+    ══════════════════════════════════════════ -->
+    <div class="screen" id="s2">
+      <div class="toolbar">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="slabel" style="margin-bottom:0">Default sheet:</span>
+          <select class="sel" id="sheet-size-sel">
+            <option value="0">3000 × 1500 mm</option>
+            <option value="1">2500 × 1250 mm</option>
+            <option value="2">2000 × 1000 mm</option>
+            <option value="3">1500 × 750 mm</option>
+            <option value="4">1000 × 500 mm</option>
+          </select>
+          <span id="server-status" style="font-size:12px;color:var(--text3)">● Checking server…</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="reNestAll()">↺ Nest all groups</button>
+        </div>
+      </div>
+
+      <!-- Per-group controls -->
+      <div id="group-controls" style="display:flex;flex-direction:column;gap:6px"></div>
+
+      <div id="nest-stats" class="stat-grid" style="margin-top:4px"></div>
+      <div class="group-tabs" id="group-tabs"></div>
+      <div id="nest-body"></div>
+      <div class="legend" id="nest-legend"></div>
+
+      <div class="bbar">
+        <span class="muted-sm" id="nest-summary"></span>
+        <div class="bbar-right">
+          <button class="btn" onclick="goTo(1)">← Back</button>
+          <button class="btn btn-primary" onclick="goExport()">Approve &amp; export →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         SCREEN 4 · EXPORT
+    ══════════════════════════════════════════ -->
+    <div class="screen" id="s3">
+      <div class="two-col">
+        <div>
+          <p class="slabel">Nested DXF files</p>
+          <div id="export-files" class="card" style="margin-bottom:10px"></div>
+          <button class="btn btn-primary" style="width:100%" onclick="downloadAll()">↓ Download all DXF files</button>
+        </div>
+        <div>
+          <p class="slabel">Job summary</p>
+          <div class="card tbl-wrap" style="margin-bottom:10px;padding:0;overflow:hidden">
+            <table id="export-table">
+              <thead><tr><th>Part</th><th>Qty</th><th>Material</th><th>Thickness</th></tr></thead>
+              <tbody id="export-tbody"></tbody>
+            </table>
+            <div class="mat-row" style="padding:10px 12px;border-top:1px solid var(--border);justify-content:space-between">
+              <span id="export-total" class="muted-sm"></span>
+              <button class="btn btn-sm" onclick="exportCSV()">Export CSV</button>
+            </div>
+          </div>
+          <div class="card">
+            <p class="slabel" style="margin-bottom:10px">Material usage</p>
+            <div id="material-summary"></div>
+          </div>
+        </div>
+      </div>
+      <div class="bbar">
+        <span class="ok-txt" id="export-done"></span>
+        <div class="bbar-right">
+          <button class="btn" onclick="goTo(2)">← Back</button>
+          <button class="btn" onclick="saveJobToHistory();alert('Job saved to history!')">💾 Save to history</button>
+          <button class="btn btn-primary" onclick="newJob()">+ New job</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /shell -->
+
+<!-- ── Server Settings Modal ── -->
+<div class="modal-overlay" id="server-modal" onclick="if(event.target===this)closeServerSettings()">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <span class="modal-title">Nesting server</span>
+      <button class="modal-close" onclick="closeServerSettings()">✕</button>
+    </div>
+    <div class="modal-body" style="display:block;padding:20px">
+      <p class="slabel" style="margin-bottom:8px">Server URL</p>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input type="text" id="server-url-input" style="flex:1;font-family:'IBM Plex Mono',monospace;font-size:13px" placeholder="https://your-server.railway.app">
+        <button class="btn" onclick="testServerUrl()">Test</button>
+      </div>
+      <div id="server-test-result" style="font-size:13px;margin-bottom:16px;min-height:20px"></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn btn-sm" onclick="setQuickUrl('https://nestflow-server-production.up.railway.app')">Use Railway (nestflow-server-production…)</button>
+        <button class="btn btn-sm" onclick="setQuickUrl('http://localhost:3000')">Use local server (localhost:3000)</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span class="modal-info" id="server-current-url" style="font-family:'IBM Plex Mono',monospace;font-size:11px"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="saveServerUrl()">Save & connect</button>
+        <button class="btn" onclick="closeServerSettings()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Job History Modal ── -->
+<div class="modal-overlay" id="history-modal" onclick="if(event.target===this)closeHistory()">
+  <div class="modal" style="max-width:860px">
+    <div class="modal-header">
+      <span class="modal-title">Job history</span>
+      <span class="modal-meta" id="history-count"></span>
+      <button class="modal-close" onclick="closeHistory()">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0;display:block;background:var(--bg)">
+      <div id="history-body" style="padding:16px"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" onclick="clearHistory()" style="color:var(--red)">Clear all history</button>
+      <button class="btn btn-sm" onclick="closeHistory()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Part Info Popup ── -->
+<div class="info-popup" id="part-info-popup">
+  <div class="info-popup-header">
+    <span class="info-popup-title" id="pip-title">—</span>
+    <button class="info-popup-close" onclick="closeInfoPopup()">✕</button>
+  </div>
+  <div class="info-popup-body" id="pip-body"></div>
+</div>
+
+<!-- ── DXF Preview Modal ── -->
+<div class="modal-overlay" id="dxf-modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">—</span>
+      <span class="modal-meta" id="modal-meta"></span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="dxf-svg-wrap"></div>
+    </div>
+    <div class="modal-footer">
+      <span class="modal-info" id="modal-info"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" id="modal-dl-btn">↓ Download DXF</button>
+        <button class="btn btn-sm" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+const SHEET_SIZES = [
+  {label:'3000 × 1500 mm',w:3000,h:1500},
+  {label:'2500 × 1250 mm',w:2500,h:1250},
+  {label:'2000 × 1000 mm',w:2000,h:1000},
+  {label:'1500 × 750 mm', w:1500,h:750},
+  {label:'1000 × 500 mm', w:1000,h:500},
+];
+const PART_COLORS = ['#B5D4F4','#9FE1CB','#FAC775','#F5C4B3','#CECBF6','#C0DD97','#F4C0D1','#D3D1C7','#85B7EB','#5DCAA5'];
+
+let state = {
+  step: 0,
+  cutListName: '',
+  dxfFiles: [],
+  parts: [],
+  nestResults: [],
+  activeGroup: 0,
+  partColorMap: {},
+};
+
+// ═══════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════
+function tryGo(i){ if(i < state.step) goTo(i); }
+
+function goTo(i){
+  state.step = i;
+  document.querySelectorAll('.screen').forEach((s,j) => s.classList.toggle('active', j===i));
+  document.querySelectorAll('.step').forEach((s,j) => {
+    s.classList.remove('active','done');
+    if(j===i) s.classList.add('active');
+    else if(j<i) s.classList.add('done');
+  });
+  window.scrollTo(0,0);
+}
+
+// ═══════════════════════════════════════════════════════
+// SCREEN 1 · IMPORT
+// ═══════════════════════════════════════════════════════
+function loadCutList(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      state.parts = parseCutList(rows, file.name);
+      state.cutListName = file.name;
+      updateImportUI();
+    } catch(err) {
+      showNotif('Could not parse cut list: ' + err.message, 'red');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function loadDxf(evt){
+  const files = Array.from(evt.target.files);
+  // Store both metadata AND the actual File object for geometry reading
+  state.dxfFiles = files.map(f => ({name:f.name, size:f.size, _fileRef:f}));
+  updateImportUI();
+}
+
+function updateImportUI(){
+  const hasCL = state.parts.length > 0;
+  const hasDXF = state.dxfFiles.length > 0;
+
+  const dzCL = document.getElementById('dz-cl');
+  const dzDXF = document.getElementById('dz-dxf');
+
+  if(hasCL){
+    dzCL.classList.add('loaded');
+    dzCL.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.cutListName}</p><p class="dz-sub">${state.parts.length} parts loaded</p>`;
+  }
+  if(hasDXF){
+    dzDXF.classList.add('loaded');
+    dzDXF.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.dxfFiles.length} DXF files</p><p class="dz-sub">Ready to match</p>`;
+  }
+
+  const filesDiv = document.getElementById('import-files');
+  if(hasCL || hasDXF){
+    filesDiv.style.display='block';
+    let html='';
+    if(hasCL) html += `<div class="file-row"><span style="font-size:20px">📋</span><div class="fr-info"><div class="fr-name">${state.cutListName}</div><div class="fr-meta">${state.parts.length} line items</div></div><span class="badge bg">Ready</span></div>`;
+    if(hasDXF) html += `<div class="file-row"><span style="font-size:20px">📁</span><div class="fr-info"><div class="fr-name">${state.dxfFiles.length} DXF files</div><div class="fr-meta">Indexed and ready</div></div><span class="badge bg">Ready</span></div>`;
+    document.getElementById('import-files-list').innerHTML = html;
+  }
+
+  const ready = hasCL && hasDXF;
+  document.getElementById('btn-match').disabled = !ready;
+  document.getElementById('import-hint').style.display = ready ? 'none' : '';
+}
+
+function showNotif(msg, type){
+  const d = document.getElementById('import-notif');
+  d.style.display='block';
+  d.className = 'notif notif-'+type;
+  d.textContent = msg;
+}
+
+// ── Cut list parser ──
+const COL_ALIASES = {
+  partName:  ['mark','part','part name','part_name','partname','description','item','part no','part number','component','drawing'],
+  quantity:  ['qty','quantity','count','no.','number','amount','pcs','pieces','no off','no_off','required'],
+  material:  ['material','mat','grade','steel grade','material grade','type','spec'],
+  // Thickness aliases — deliberately strict to avoid matching 'Length(mm)', 'Grade' etc.
+  thickness: ['thickness','thk','thkns','thick','plate thickness','wall thickness','gauge'],
+  profile:   ['profile','section','size','dimension','dim'],
+};
+function findCol(headers, aliases){
+  const lh = headers.map(h => String(h).toLowerCase().trim());
+  for(const a of aliases){
+    const i = lh.findIndex(h => h===a || h.includes(a));
+    if(i>=0) return i;
+  }
+  return -1;
+}
+
+// Parse profile strings like FL6*75, FL5*50, PL10*200 → {thickness:'6mm', width:'75mm'}
+function parseProfile(profile){
+  if(!profile) return {thickness:'', width:''};
+  const s = String(profile).trim();
+  // Match patterns: FL6*75, PL10*200, 6*75, 6x75, 6X75
+  const m = s.match(/[A-Z]*(\d+(?:\.\d+)?)[*xX](\d+(?:\.\d+)?)/i);
+  if(m) return {thickness: m[1]+'mm', width: m[2]+'mm'};
+  // Just a number — treat as thickness
+  const n = s.match(/(\d+(?:\.\d+)?)/);
+  if(n) return {thickness: n[1]+'mm', width:''};
+  return {thickness: s, width:''};
+}
+
+// Map grade numbers to steel grade names
+function gradeLabel(grade){
+  const g = String(grade||'').trim();
+  if(!g || g==='0') return 'Mild steel';
+  // Common grade numbers → names
+  if(g==='250'||g==='300') return `Grade ${g}`;
+  if(g==='350'||g==='355') return 'S355';
+  if(g==='400'||g==='450') return `S${g}`;
+  return g; // Return as-is if unrecognised
+}
+
+// Skip rows that are subtotals, headers, or empty
+function isSkipRow(row, nameVal){
+  if(!nameVal) return true;
+  const lower = nameVal.toLowerCase();
+  // Skip subtotal rows, title rows, blank rows
+  if(lower.includes('subtotal')||lower.includes('total')||lower.includes('mark')||
+     lower.includes('mini detailing')||lower.includes('plate material')||lower==='ifc') return true;
+  return false;
+}
+
+function parseCutList(rows, filename){
+  if(rows.length < 2) return [];
+
+  // Find header row — scan up to row 15 to handle title blocks
+  let hdr = -1;
+  for(let i=0;i<Math.min(15,rows.length);i++){
+    const r = rows[i].map(c=>String(c).toLowerCase().trim());
+    if(r.some(c => ['mark','part','description','item','part name','drawing'].includes(c))){
+      hdr=i; break;
+    }
+  }
+  if(hdr<0){
+    // Fallback: find first row that looks like a header
+    for(let i=0;i<Math.min(15,rows.length);i++){
+      const r = rows[i].map(c=>String(c).toLowerCase().trim());
+      if(r.some(c => COL_ALIASES.partName.some(a=>c.includes(a)))){ hdr=i; break; }
+    }
+  }
+  if(hdr<0) hdr=0;
+
+  const headers = rows[hdr];
+  const pC  = findCol(headers, COL_ALIASES.partName);
+  const qC  = findCol(headers, COL_ALIASES.quantity);
+  const mC  = findCol(headers, COL_ALIASES.material);
+  const tC  = findCol(headers, COL_ALIASES.thickness);
+  const prC = findCol(headers, COL_ALIASES.profile);
+
+  const parts=[];
+  for(let i=hdr+1;i<rows.length;i++){
+    const row = rows[i];
+    const nameVal = pC>=0 ? String(row[pC]||'').trim() : '';
+    if(isSkipRow(row, nameVal)) continue;
+
+    // Always try to extract thickness from Profile first (e.g. FL6*75 → 6mm)
+    // This is the primary source for your format — there is no separate thickness column
+    let thickness = '', material = '';
+    if(prC>=0 && row[prC]){
+      const parsed = parseProfile(row[prC]);
+      thickness = parsed.thickness;
+    }
+    // Only use an explicit thickness column if Profile gave us nothing
+    // AND the column is unambiguously named (not 'Length(mm)', 'Grade' etc.)
+    if(!thickness && tC>=0 && row[tC]){
+      const raw = String(row[tC]).trim();
+      // Only accept if value looks like a thickness (1–100mm range), not a length like 200/1050
+      const num = parseFloat(raw);
+      if(!isNaN(num) && num > 0 && num <= 100){
+        thickness = num + 'mm';
+      }
+    }
+
+    // Grade column → material name
+    if(mC>=0 && row[mC]) material = gradeLabel(row[mC]);
+    else material = 'Mild steel';
+
+    // Clean up thickness — ensure it ends in mm
+    if(thickness && !thickness.toLowerCase().endsWith('mm')) thickness += 'mm';
+
+    parts.push({
+      id:'p'+i, partName:nameVal,
+      quantity: qC>=0 ? (parseInt(row[qC])||1) : 1,
+      material,
+      thickness: thickness||'Unknown',
+      profile: prC>=0 ? String(row[prC]||'').trim() : '',
+      dxfFile:null, matchStatus:'unmatched', candidates:[],
+    });
+  }
+  return parts;
+}
+
+// ── Demo data ──
+function loadDemo(){
+  state.parts = [
+    {id:'p1',partName:'3p-34', profile:'FL5*50', quantity:4,  material:'Grade 250',thickness:'5mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p2',partName:'3p-32', profile:'FL6*75', quantity:8,  material:'Grade 250',thickness:'6mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p3',partName:'3p-247',profile:'FL6*75', quantity:6,  material:'Grade 250',thickness:'6mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p4',partName:'3p-317',profile:'FL6*90', quantity:6,  material:'Grade 250',thickness:'6mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p5',partName:'3p-70', profile:'FL8*75', quantity:2,  material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p6',partName:'3p-216',profile:'FL8*75', quantity:2,  material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p7',partName:'3p-217',profile:'FL8*75', quantity:4,  material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p8',partName:'3p-218',profile:'FL8*75', quantity:73, material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p9',partName:'3p-219',profile:'FL8*75', quantity:2,  material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+    {id:'p10',partName:'3p-221',profile:'FL8*75',quantity:2,  material:'Grade 250',thickness:'8mm', dxfFile:null,matchStatus:'unmatched',candidates:[]},
+  ];
+  state.dxfFiles = [
+    {name:'3p-34.dxf',size:6200},{name:'3p-32.dxf',size:8400},
+    {name:'3p-247.dxf',size:8400},{name:'3p-317.dxf',size:9100},
+    {name:'3p-70.dxf',size:11000},{name:'3p-216.dxf',size:10800},
+    {name:'3p-217.dxf',size:10900},{name:'3p-218.dxf',size:11000},
+    {name:'3p-219.dxf',size:10700},{name:'3p-219-v2.dxf',size:10750},
+    {name:'3p-221.dxf',size:10600},
+  ];
+  state.cutListName = 'Plate_LIST_(IFC).xlsx';
+  updateImportUI();
+}
+
+function goMatch(){
+  state.parts = autoMatch(state.parts, state.dxfFiles);
+  goTo(1);
+  renderMatchScreen();
+}
+
+// ═══════════════════════════════════════════════════════
+// SCREEN 2 · MATCH & REVIEW
+// ═══════════════════════════════════════════════════════
+
+// Normalise: lowercase, strip extension, collapse separators to single dash
+function norm(s){
+  return String(s).toLowerCase()
+    .replace(/\.(dxf|dwg)$/i,'')
+    .replace(/[_\s\.]+/g,'-')
+    .replace(/-+/g,'-')
+    .replace(/^-|-$/g,'')
+    .trim();
+}
+
+function matchScore(partName, dxfName){
+  const np = norm(partName);
+  const nd = norm(dxfName);
+
+  // 1. Exact match after normalisation → perfect score
+  if(np === nd) return 1.0;
+
+  // 2. One is the other with a version suffix e.g. "3p-34" vs "3p-34-v2" or "3p-34_rev1"
+  //    Allow only if the base part is a whole-token prefix
+  const versionSuffix = /[-_](v\d+|rev\d+|r\d+|old|new|final|\d{4})$/i;
+  const ndBase = nd.replace(versionSuffix,'');
+  const npBase = np.replace(versionSuffix,'');
+  if(ndBase === np || npBase === nd) return 0.92;
+  if(ndBase === npBase && ndBase.length > 0) return 0.88;
+
+  // 3. Exact whole-word containment — only if the match is a COMPLETE token
+  //    "3p-34" inside "prefix-3p-34" is fine; "26" inside "236" is NOT
+  const ndTokens = nd.split('-');
+  const npTokens = np.split('-');
+
+  // All tokens of the part name must appear in the filename tokens in order
+  let ti=0;
+  for(const tok of npTokens){
+    const found = ndTokens.indexOf(tok, ti);
+    if(found===-1){ ti=-1; break; }
+    ti=found+1;
+  }
+  if(ti>0) return 0.85;
+
+  // All tokens of the filename in the part name
+  let ti2=0;
+  for(const tok of ndTokens){
+    const found = npTokens.indexOf(tok, ti2);
+    if(found===-1){ ti2=-1; break; }
+    ti2=found+1;
+  }
+  if(ti2>0) return 0.82;
+
+  // 4. Numeric token comparison — if either name contains only numbers as key tokens,
+  //    require them to match exactly (prevents 26 matching 236)
+  const npNums = npTokens.filter(t=>/^\d+$/.test(t));
+  const ndNums = ndTokens.filter(t=>/^\d+$/.test(t));
+  if(npNums.length>0 && ndNums.length>0){
+    // If the numeric parts don't overlap exactly, kill the score
+    const numMatch = npNums.every(n=>ndNums.includes(n)) && ndNums.every(n=>npNums.includes(n));
+    if(!numMatch) return 0; // numbers don't match — not a candidate at all
+    return 0.78;
+  }
+
+  // 5. Fuzzy character overlap — only for non-numeric names, with a high threshold
+  const longer = np.length>nd.length?np:nd;
+  const shorter = np.length>nd.length?nd:np;
+  if(longer.length===0) return 0;
+  // Require the shorter to be at least 70% of the longer's length to be a candidate
+  if(shorter.length/longer.length < 0.7) return 0;
+  let m=0;
+  for(const c of shorter) if(longer.includes(c)) m++;
+  return (m/longer.length)*0.5; // cap at 0.5 so fuzzy never triggers auto-match
+}
+
+function autoMatch(parts, files){
+  // Build a map of norm(filename) → file for fast exact lookup
+  const exactMap={};
+  for(const f of files) exactMap[norm(f.name)]=f;
+
+  return parts.map(p => {
+    const np = norm(p.partName);
+
+    // Fast path: exact normalised match
+    if(exactMap[np]){
+      return {...p, matchStatus:'matched', candidates:[], dxfFile:exactMap[np]};
+    }
+
+    // Score all files
+    const scored = files
+      .map(f=>({f, s:matchScore(p.partName, f.name)}))
+      .filter(x=>x.s>0)
+      .sort((a,b)=>b.s-a.s);
+
+    if(!scored.length){
+      return {...p, matchStatus:'unmatched', candidates:[], dxfFile:null};
+    }
+
+    const best = scored[0].s;
+    const second = scored[1]?.s || 0;
+    const gap = best - second;
+
+    // Auto-match if score is high AND there's a clear gap to the next candidate
+    if(best >= 0.88 && gap >= 0.05){
+      return {...p, matchStatus:'matched', candidates:[], dxfFile:scored[0].f};
+    }
+
+    // High score but close second — show top candidates for review
+    if(best >= 0.75){
+      return {...p, matchStatus:'review', candidates:scored.slice(0,4).map(x=>x.f), dxfFile:scored[0].f};
+    }
+
+    // Low confidence — unmatched
+    return {...p, matchStatus:'unmatched', candidates:scored.slice(0,3).map(x=>x.f), dxfFile:null};
+  });
+}
+
+function renderMatchScreen(){
+  const parts = state.parts;
+  const matched = parts.filter(p=>p.matchStatus==='matched').length;
+  const review  = parts.filter(p=>p.matchStatus==='review').length;
+  const unmatched = parts.filter(p=>p.matchStatus==='unmatched').length;
+
+  document.getElementById('match-stats').innerHTML = `
+    <div class="stat"><div class="stat-lbl">Total parts</div><div class="stat-val">${parts.length}</div></div>
+    <div class="stat"><div class="stat-lbl">Matched</div><div class="stat-val g">${matched}</div></div>
+    <div class="stat"><div class="stat-lbl">Needs review</div><div class="stat-val a">${review}</div></div>
+    <div class="stat"><div class="stat-lbl">Unmatched</div><div class="stat-val ${unmatched>0?'r':'g'}">${unmatched}</div></div>
+  `;
+
+  const tbody = document.getElementById('match-tbody');
+  tbody.innerHTML = parts.map(p => {
+    const statusBadge = p.matchStatus==='matched'
+      ? '<span class="badge bg">✓ Matched</span>'
+      : p.matchStatus==='review'
+      ? '<span class="badge ba">⚠ Review</span>'
+      : '<span class="badge br">✗ No match</span>';
+
+    const dxfCell = p.matchStatus==='matched'
+      ? `<div class="dxf-actions">
+           <span class="dxf-fname">${p.dxfFile?.name||'—'}</span>
+           <button class="dxf-link info-btn" onclick="showPartInfo('${p.id}')">📋 Info</button>
+           ${p.dxfFile?._fileRef ? `
+             <button class="dxf-link view" onclick="viewDxf('${p.id}')">👁 View</button>
+             <button class="dxf-link" onclick="downloadPartDxf('${p.id}')">↓ DXF</button>
+           ` : ''}
+         </div>`
+      : p.matchStatus==='review'
+      ? `<div class="dxf-actions">
+           <select class="sel" style="font-size:12px" onchange="setCandidate('${p.id}',this.value)">${p.candidates.map(c=>`<option value="${c.name}"${p.dxfFile?.name===c.name?' selected':''}>${c.name}</option>`).join('')}</select>
+           <button class="dxf-link info-btn" onclick="showPartInfo('${p.id}')">📋 Info</button>
+           ${p.dxfFile?._fileRef ? `
+             <button class="dxf-link view" onclick="viewDxf('${p.id}')">👁 View</button>
+             <button class="dxf-link" onclick="downloadPartDxf('${p.id}')">↓ DXF</button>
+           ` : ''}
+         </div>`
+      : `<div class="dxf-actions">
+           <span style="font-size:12px;color:var(--red);font-style:italic">No match found</span>
+           <button class="dxf-link info-btn" onclick="showPartInfo('${p.id}')">📋 Info</button>
+         </div>`;
+
+    const actionCell = p.matchStatus==='review'
+      ? `<button class="btn btn-sm" onclick="confirmPart('${p.id}')">Confirm</button>`
+      : p.matchStatus==='unmatched'
+      ? `<button class="btn btn-sm" onclick="manualBrowse('${p.id}')">Browse…</button>`
+      : '';
+
+    return `<tr class="row-${p.matchStatus}" id="row-${p.id}">
+      <td class="mono fw5">${p.partName}</td>
+      <td class="mono" style="color:var(--text2)">${p.profile||'—'}</td>
+      <td>${p.material}</td>
+      <td>${p.thickness}</td>
+      <td style="text-align:center"><input class="qty-inp" type="number" min="1" value="${p.quantity}" onchange="setQty('${p.id}',this.value)"></td>
+      <td>${dxfCell}</td>
+      <td>${statusBadge}</td>
+      <td>${actionCell}</td>
+    </tr>`;
+  }).join('');
+
+  updateMatchBar();
+}
+
+function setCandidate(id, fname){
+  const p = state.parts.find(x=>x.id===id);
+  if(!p) return;
+  const f = state.dxfFiles.find(x=>x.name===fname) || {name:fname};
+  p.dxfFile = f;
+  // Don't auto-confirm — keep as review until confirmed
+}
+
+function confirmPart(id){
+  const p = state.parts.find(x=>x.id===id);
+  if(!p) return;
+  p.matchStatus = 'matched';
+  renderMatchScreen();
+}
+
+function setQty(id, val){
+  const p = state.parts.find(x=>x.id===id);
+  if(p) p.quantity = Math.max(1, parseInt(val)||1);
+}
+
+function manualBrowse(id){
+  const name = prompt('Enter DXF filename (e.g. PART-001.dxf):');
+  if(!name) return;
+  const p = state.parts.find(x=>x.id===id);
+  if(!p) return;
+  p.dxfFile = {name: name.endsWith('.dxf')||name.endsWith('.dwg')?name:name+'.dxf'};
+  p.matchStatus = 'matched';
+  renderMatchScreen();
+}
+
+function updateMatchBar(){
+  const unmatched = state.parts.filter(p=>p.matchStatus==='unmatched').length;
+  const review = state.parts.filter(p=>p.matchStatus==='review').length;
+  const issues = unmatched + review;
+  const hint = document.getElementById('match-hint');
+  const btn = document.getElementById('btn-nest');
+  if(issues > 0){
+    hint.textContent = `Resolve ${issues} item${issues!==1?'s':''} before proceeding`;
+    hint.className = 'warn-txt';
+    btn.disabled = true;
+  } else {
+    hint.textContent = 'All parts matched — ready to nest';
+    hint.className = 'ok-txt';
+    btn.disabled = false;
+  }
+}
+
+// ── Download original DXF file directly ──
+function downloadPartDxf(partId){
+  const p = state.parts.find(x=>x.id===partId);
+  if(!p?.dxfFile?._fileRef) return;
+  const url = URL.createObjectURL(p.dxfFile._fileRef);
+  const a = document.createElement('a');
+  a.href=url; a.download=p.dxfFile.name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+// ── Part info popup ──
+function showPartInfo(partId){
+  const p = state.parts.find(x=>x.id===partId);
+  if(!p) return;
+
+  // Position popup near the clicked button
+  const btn = event.currentTarget || event.target;
+  const rect = btn.getBoundingClientRect();
+  const popup = document.getElementById('part-info-popup');
+
+  // Build info rows from all available cut list fields
+  const rows = [
+    { label:'Mark / Part',  value: p.partName,            highlight: true },
+    { label:'Profile',      value: p.profile || '—' },
+    { label:'Material',     value: p.material || '—' },
+    { label:'Thickness',    value: p.thickness || '—' },
+    { label:'Quantity',     value: p.quantity,             highlight: true },
+    { label:'DXF file',     value: p.dxfFile?.name || 'Not matched' },
+    { label:'Match status', value: p.matchStatus==='matched'?'✓ Matched':p.matchStatus==='review'?'⚠ Review':'✗ Unmatched' },
+  ];
+
+  document.getElementById('pip-title').textContent = p.partName;
+  document.getElementById('pip-body').innerHTML = rows.map(r=>`
+    <div class="info-row">
+      <span class="info-lbl">${r.label}</span>
+      <span class="info-val${r.highlight?' highlight':''}">${r.value}</span>
+    </div>
+  `).join('');
+
+  // Position: below the button, shift left if near right edge
+  popup.style.display='block';
+  let left = rect.left;
+  let top  = rect.bottom + 6;
+  // Keep within viewport
+  const pw = popup.offsetWidth || 280;
+  if(left + pw > window.innerWidth - 10) left = window.innerWidth - pw - 10;
+  if(top + 300 > window.innerHeight) top = rect.top - popup.offsetHeight - 6;
+  popup.style.left = left + 'px';
+  popup.style.top  = top  + 'px';
+  popup.classList.add('open');
+
+  // Close when clicking outside
+  setTimeout(()=>document.addEventListener('click', outsideInfoClick, {once:true}), 10);
+}
+
+function outsideInfoClick(e){
+  const popup = document.getElementById('part-info-popup');
+  if(!popup.contains(e.target)) closeInfoPopup();
+}
+
+function closeInfoPopup(){
+  document.getElementById('part-info-popup').classList.remove('open');
+  document.getElementById('part-info-popup').style.display='none';
+}
+
+// ── View DXF in modal ──
+async function viewDxf(partId){
+  const p = state.parts.find(x=>x.id===partId);
+  if(!p?.dxfFile?._fileRef) return;
+
+  // Read file text
+  const text = await new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=e=>res(e.target.result);
+    r.onerror=rej;
+    r.readAsText(p.dxfFile._fileRef);
+  });
+
+  const geom = parseDxfGeometry(text);
+  if(!geom){ alert('Could not parse DXF geometry'); return; }
+
+  // Render to SVG
+  const svg = dxfToSvg(geom, p);
+
+  // Show modal
+  document.getElementById('modal-title').textContent = p.dxfFile.name;
+  document.getElementById('modal-meta').textContent = `${p.partName}  ·  ${Math.round(geom.w)} × ${Math.round(geom.h)} mm`;
+  document.getElementById('modal-info').textContent =
+    `Size: ${geom.w.toFixed(2)} × ${geom.h.toFixed(2)} mm  ·  Holes: ${geom.circles.length}  ·  Profile: ${p.profile||'—'}  ·  Material: ${p.material}`;
+  document.getElementById('dxf-svg-wrap').innerHTML = svg;
+  document.getElementById('modal-dl-btn').onclick = ()=>downloadPartDxf(partId);
+  document.getElementById('dxf-modal').classList.add('open');
+}
+
+function closeModal(){
+  document.getElementById('dxf-modal').classList.remove('open');
+}
+
+// Close on Escape key
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+
+// ── Bulge arc geometry helpers ──
+// DXF bulge: tan(included_angle / 4). Positive = CCW arc, negative = CW arc.
+// Returns SVG arc path segment from (x1,y1) to (x2,y2) with given bulge
+function bulgeArcSvgSegment(x1,y1,x2,y2,bulge,scale,tx,ty){
+  if(Math.abs(bulge) < 0.0001){
+    // Straight line
+    return `L ${tx(x2)} ${ty(y2)}`;
+  }
+  // Compute arc centre and radius from two points + bulge
+  const dx=x2-x1, dy=y2-y1;
+  const d=Math.sqrt(dx*dx+dy*dy);
+  const r=d*(1+bulge*bulge)/(4*Math.abs(bulge));
+  // Large arc flag: |bulge| > 1 means arc > 180°
+  const largeArc=Math.abs(bulge)>1?1:0;
+  // Sweep: positive bulge = CCW in DXF = CW in SVG (Y flipped)
+  const sweep=bulge>0?0:1;
+  const rs=(r*scale).toFixed(3);
+  return `A ${rs} ${rs} 0 ${largeArc} ${sweep} ${tx(x2)} ${ty(y2)}`;
+}
+
+// Build an SVG path string from a polyline with bulge vertices (closed)
+function polylineToSvgPath(verts, closed, scale, tx, ty){
+  if(!verts||verts.length<2) return '';
+  let d=`M ${tx(verts[0].x)} ${ty(verts[0].y)}`;
+  for(let i=0;i<verts.length-1;i++){
+    d+=' '+bulgeArcSvgSegment(verts[i].x,verts[i].y,verts[i+1].x,verts[i+1].y,verts[i].bulge||0,scale,tx,ty);
+  }
+  // Closing segment (last vertex back to first, using last vertex's bulge)
+  if(closed){
+    d+=' '+bulgeArcSvgSegment(verts[verts.length-1].x,verts[verts.length-1].y,verts[0].x,verts[0].y,verts[verts.length-1].bulge||0,scale,tx,ty);
+    d+=' Z';
+  }
+  return d;
+}
+
+// ── DXF → SVG renderer ──
+function dxfToSvg(geom, part){
+  const PAD=20;
+  const MAX_W=720, MAX_H=500;
+  const scaleX=(MAX_W-PAD*2)/geom.w;
+  const scaleY=(MAX_H-PAD*2)/geom.h;
+  const scale=Math.min(scaleX,scaleY,4);
+  const svgW=Math.round(geom.w*scale+PAD*2);
+  const svgH=Math.round(geom.h*scale+PAD*2);
+
+  // DXF Y is up, SVG Y is down — flip vertically
+  const tx=(x)=>+(PAD + x*scale).toFixed(3);
+  const ty=(y)=>+(PAD + (geom.h - y)*scale).toFixed(3);
+
+  let shapes='';
+
+  // Find the CUT layer outline polyline
+  const cutPoly = geom.polylines.find(pl=>pl.layer?.toUpperCase()==='CUT') || geom.polylines[0];
+
+  if(cutPoly && cutPoly.verts.length>=2){
+    const hasBulge = cutPoly.verts.some(v=>Math.abs(v.bulge||0)>0.0001);
+    if(hasBulge){
+      // Curved outline — render as SVG path with arc segments
+      const d = polylineToSvgPath(cutPoly.verts, cutPoly.closed!==false, scale, tx, ty);
+      shapes+=`<path d="${d}" fill="#e8f0ff" stroke="#1a4a96" stroke-width="1.5" stroke-linejoin="round"/>`;
+    } else {
+      // Straight outline — polygon is fine
+      const pts=cutPoly.verts.map(v=>`${tx(v.x)},${ty(v.y)}`).join(' ');
+      shapes+=`<polygon points="${pts}" fill="#e8f0ff" stroke="#1a4a96" stroke-width="1.5" stroke-linejoin="round"/>`;
+    }
+  } else {
+    shapes+=`<rect x="${PAD}" y="${PAD}" width="${(geom.w*scale).toFixed(2)}" height="${(geom.h*scale).toFixed(2)}" fill="#e8f0ff" stroke="#1a4a96" stroke-width="1.5"/>`;
+  }
+
+  // Draw any non-CUT polylines (internal features, slots etc.)
+  for(const pl of geom.polylines){
+    if(pl.layer?.toUpperCase()==='CUT') continue;
+    if(pl.verts.length===2 && Math.abs(Math.abs(pl.verts[0].bulge||0)-1)<0.01) continue; // skip — handled as circle below
+    const d=polylineToSvgPath(pl.verts, pl.closed, scale, tx, ty);
+    if(d) shapes+=`<path d="${d}" fill="none" stroke="#888" stroke-width="1"/>`;
+  }
+
+  // Draw holes (circles — bulge=1 polylines converted to circles in parser)
+  for(const c of geom.circles){
+    const cx=tx(c.cx), cy=ty(c.cy), r=Math.max(2, c.r*scale);
+    shapes+=`<circle cx="${cx}" cy="${cy}" r="${r.toFixed(2)}" fill="white" stroke="#cc2222" stroke-width="1.5"/>`;
+    const arm=Math.min(r*0.5,6);
+    shapes+=`<line x1="${(cx-arm).toFixed(1)}" y1="${cy}" x2="${(cx+arm).toFixed(1)}" y2="${cy}" stroke="#cc2222" stroke-width="0.5" opacity="0.6"/>`;
+    shapes+=`<line x1="${cx}" y1="${(cy-arm).toFixed(1)}" x2="${cx}" y2="${(cy+arm).toFixed(1)}" stroke="#cc2222" stroke-width="0.5" opacity="0.6"/>`;
+    if(r*2>14) shapes+=`<text x="${cx}" y="${(cy+r+10).toFixed(1)}" font-size="9" fill="#cc2222" text-anchor="middle" font-family="IBM Plex Mono,monospace">⌀${(c.r*2).toFixed(1)}</text>`;
+  }
+
+  // Dimension annotations
+  shapes+=`<line x1="${PAD}" y1="${svgH-6}" x2="${(PAD+geom.w*scale).toFixed(1)}" y2="${svgH-6}" stroke="#666" stroke-width="0.8"/>`;
+  shapes+=`<text x="${(PAD+geom.w*scale/2).toFixed(1)}" y="${svgH-1}" font-size="9" fill="#444" text-anchor="middle" font-family="IBM Plex Mono,monospace">${geom.w.toFixed(1)} mm</text>`;
+  shapes+=`<line x1="${svgW-6}" y1="${PAD}" x2="${svgW-6}" y2="${(PAD+geom.h*scale).toFixed(1)}" stroke="#666" stroke-width="0.8"/>`;
+  shapes+=`<text x="${svgW-1}" y="${(PAD+geom.h*scale/2).toFixed(1)}" font-size="9" fill="#444" text-anchor="middle" font-family="IBM Plex Mono,monospace" transform="rotate(90,${svgW-1},${(PAD+geom.h*scale/2).toFixed(1)})">${geom.h.toFixed(1)} mm</text>`;
+  shapes+=`<text x="${PAD+6}" y="${PAD+14}" font-size="10" font-weight="500" fill="#1a4a96" font-family="IBM Plex Mono,monospace">${part.partName}</text>`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">${shapes}</svg>`;
+}
+
+
+async function goNest(){
+  goTo(2);
+  await runNesting();
+}
+
+// ═══════════════════════════════════════════════════════
+// SCREEN 3 · NESTING
+// ═══════════════════════════════════════════════════════
+function groupByMaterial(parts){
+  const groups = {};
+  for(const p of parts){
+    if(!p.dxfFile) continue;
+    const key = `${p.material}__${p.thickness}`;
+    if(!groups[key]) groups[key]={key,material:p.material,thickness:p.thickness,parts:[]};
+    groups[key].parts.push(p);
+  }
+  return Object.values(groups);
+}
+
+// ═══════════════════════════════════════════════════════
+// DXF GEOMETRY PARSER
+// Handles CorelDRAW DXF format:
+//   - Outer rect: POLYLINE on layer CUT (4 vertices, bulge=0)
+//   - Holes: POLYLINE with 2 vertices and bulge=1.0 (arc circles)
+//   - Labels: TEXT entities
+// ═══════════════════════════════════════════════════════
+function parseDxfGeometry(dxfText){
+  const lines = dxfText.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n');
+  const pairs=[];
+  for(let i=0;i+1<lines.length;i+=2){
+    const code=parseInt(lines[i].trim());
+    if(!isNaN(code)) pairs.push({code, value:lines[i+1].trim()});
+  }
+
+  const polylines=[], texts=[], circles=[];
+  let i=0;
+  while(i<pairs.length){
+    const {code,value}=pairs[i];
+
+    // ── TEXT entity ──
+    if(code===0 && value==='TEXT'){
+      let txt='', layer='';
+      i++;
+      while(i<pairs.length && pairs[i].code!==0){
+        if(pairs[i].code===1)  txt   = pairs[i].value;
+        if(pairs[i].code===8)  layer = pairs[i].value;
+        i++;
+      }
+      if(txt) texts.push({txt, layer});
+      continue;
+    }
+
+    // ── CIRCLE entity (standard circles) ──
+    if(code===0 && value==='CIRCLE'){
+      let cx=0,cy=0,r=0,layer='';
+      i++;
+      while(i<pairs.length && pairs[i].code!==0){
+        const {code:c,value:v}=pairs[i];
+        if(c===10) cx=parseFloat(v);
+        if(c===20) cy=parseFloat(v);
+        if(c===40) r=parseFloat(v);
+        if(c===8)  layer=v;
+        i++;
+      }
+      circles.push({cx,cy,r,layer});
+      continue;
+    }
+
+    // ── POLYLINE + VERTEX sequence ──
+    if(code===0 && value==='POLYLINE'){
+      let layer='', closed=false;
+      i++;
+      while(i<pairs.length && pairs[i].code!==0){
+        if(pairs[i].code===8)  layer  = pairs[i].value;
+        if(pairs[i].code===70) closed = (parseInt(pairs[i].value)&1)===1;
+        i++;
+      }
+      // Collect all VERTEX entities for this polyline
+      const verts=[];
+      while(i<pairs.length && pairs[i].value!=='SEQEND' && pairs[i].value!=='EOF'){
+        if(pairs[i].code===0 && pairs[i].value==='VERTEX'){
+          let vx=0,vy=0,bulge=0;
+          i++;
+          while(i<pairs.length && pairs[i].code!==0){
+            const {code:c,value:v}=pairs[i];
+            if(c===10) vx=parseFloat(v);
+            if(c===20) vy=parseFloat(v);
+            if(c===42) bulge=parseFloat(v);
+            i++;
+          }
+          verts.push({x:vx,y:vy,bulge});
+        } else {
+          i++;
+        }
+      }
+      if(verts.length>=2) polylines.push({layer, closed, verts});
+      continue;
+    }
+
+    // ── LWPOLYLINE (newer DXF format) ──
+    if(code===0 && value==='LWPOLYLINE'){
+      let layer='', closed=false;
+      const verts=[];
+      i++;
+      let pendingX=null;
+      while(i<pairs.length && pairs[i].code!==0){
+        const {code:c,value:v}=pairs[i];
+        if(c===8)  layer=v;
+        if(c===70) closed=(parseInt(v)&1)===1;
+        if(c===10) pendingX=parseFloat(v);
+        if(c===20 && pendingX!==null){ verts.push({x:pendingX,y:parseFloat(v),bulge:0}); pendingX=null; }
+        if(c===42 && verts.length>0) verts[verts.length-1].bulge=parseFloat(v);
+        i++;
+      }
+      if(verts.length>=2) polylines.push({layer,closed,verts});
+      continue;
+    }
+
+    i++;
+  }
+
+  // ── Detect holes from bulge polylines ──
+  // CorelDRAW encodes a circle as a 2-vertex polyline where both vertices
+  // have bulge = 1.0 (or -1.0). The circle centre and radius can be
+  // derived from the two points.
+  function bulgeToCircle(v0, v1){
+    // Both vertices must have abs(bulge) ≈ 1.0 (full circle = two semicircles)
+    if(Math.abs(Math.abs(v0.bulge)-1.0)>0.01) return null;
+    // Midpoint is centre, radius = half the distance between the two points
+    const cx=(v0.x+v1.x)/2, cy=(v0.y+v1.y)/2;
+    const r=Math.sqrt((v1.x-v0.x)**2+(v1.y-v0.y)**2)/2;
+    if(r<0.5) return null; // ignore degenerate
+    return {cx,cy,r};
+  }
+
+  const holePolylines=[], outlinePolylines=[];
+  for(const pl of polylines){
+    if(pl.verts.length===2){
+      const c=bulgeToCircle(pl.verts[0],pl.verts[1]);
+      if(c){ circles.push({...c, layer:pl.layer}); continue; }
+    }
+    // Separate cut outline from other geometry
+    if(pl.layer.toUpperCase()==='CUT') outlinePolylines.push(pl);
+    else holePolylines.push(pl);
+  }
+
+  // ── Arc-aware bounding box ──
+  // Correctly handles both outward-bulging arcs (corners) and inward-curving arcs (like quarter-rings)
+  // Only adds points where the arc genuinely passes through an axis extreme (0°/90°/180°/270°)
+  function arcBounds(x1,y1,x2,y2,bulge){
+    if(Math.abs(bulge)<0.0001) return {minX:Math.min(x1,x2),maxX:Math.max(x1,x2),minY:Math.min(y1,y2),maxY:Math.max(y1,y2)};
+    const dx=x2-x1, dy=y2-y1;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    const r=d*(1+bulge*bulge)/(4*Math.abs(bulge));
+    const s=(1-bulge*bulge)/(4*Math.abs(bulge));
+    const mx=(x1+x2)/2, my=(y1+y2)/2;
+    const cx = mx - s*dy*Math.sign(bulge);
+    const cy = my + s*dx*Math.sign(bulge);
+
+    // Start and end angles
+    let a1 = Math.atan2(y1-cy, x1-cx);
+    let a2 = Math.atan2(y2-cy, x2-cx);
+
+    // Determine sweep direction: positive bulge = CCW, negative = CW
+    // Normalise so we always sweep CCW from a1 to a2
+    if(bulge > 0){
+      if(a2 < a1) a2 += 2*Math.PI;
+    } else {
+      if(a1 < a2) a1 += 2*Math.PI;
+      [a1,a2] = [a2,a1]; // swap so a1<a2 for CCW check
+    }
+
+    // Check which axis-extreme angles (0, 90, 180, 270°) fall within the arc sweep
+    const pts = [{x:x1,y:y1},{x:x2,y:y2}];
+    const extremes = [0, Math.PI/2, Math.PI, 3*Math.PI/2, 2*Math.PI];
+    for(const ea of extremes){
+      // Normalise ea into [a1, a2] range
+      let ea2 = ea;
+      while(ea2 < a1) ea2 += 2*Math.PI;
+      if(ea2 <= a2){
+        pts.push({x: cx + r*Math.cos(ea), y: cy + r*Math.sin(ea)});
+      }
+    }
+
+    return {
+      minX: Math.min(...pts.map(p=>p.x)),
+      maxX: Math.max(...pts.map(p=>p.x)),
+      minY: Math.min(...pts.map(p=>p.y)),
+      maxY: Math.max(...pts.map(p=>p.y)),
+    };
+  }
+
+  let allX=[], allY=[];
+  for(const pl of outlinePolylines.length?outlinePolylines:polylines){
+    for(let i=0;i<pl.verts.length;i++){
+      const v=pl.verts[i], vn=pl.verts[(i+1)%pl.verts.length];
+      allX.push(v.x); allY.push(v.y);
+      if(Math.abs(v.bulge||0)>0.0001){
+        const b=arcBounds(v.x,v.y,vn.x,vn.y,v.bulge);
+        allX.push(b.minX,b.maxX); allY.push(b.minY,b.maxY);
+      }
+    }
+  }
+  // Include circles in bounds
+  for(const c of circles){ allX.push(c.cx-c.r,c.cx+c.r); allY.push(c.cy-c.r,c.cy+c.r); }
+
+  if(!allX.length) return null;
+
+  const minX=Math.min(...allX), maxX=Math.max(...allX);
+  const minY=Math.min(...allY), maxY=Math.max(...allY);
+  const w=Math.round((maxX-minX)*1000)/1000;
+  const h=Math.round((maxY-minY)*1000)/1000;
+
+  // Normalise all geometry relative to bottom-left origin
+  const normCircles=circles.map(c=>({
+    cx:Math.round((c.cx-minX)*1000)/1000,
+    cy:Math.round((c.cy-minY)*1000)/1000,
+    r: Math.round(c.r*1000)/1000,
+    layer:c.layer,
+  }));
+
+  const normPolylines=polylines.map(pl=>({
+    ...pl,
+    verts:pl.verts.map(v=>({
+      x:Math.round((v.x-minX)*1000)/1000,
+      y:Math.round((v.y-minY)*1000)/1000,
+      bulge:v.bulge||0,
+    })),
+  }));
+
+  return {w, h, circles:normCircles, polylines:normPolylines, texts:texts.map(t=>t.txt), minX, minY};
+}
+
+// Read DXF File object → geometry (returns Promise)
+function readDxfFile(fileObj){
+  return new Promise((resolve)=>{
+    if(!fileObj || !fileObj._fileRef){ resolve(null); return; }
+    const reader = new FileReader();
+    reader.onload = e => resolve(parseDxfGeometry(e.target.result));
+    reader.onerror = () => resolve(null);
+    reader.readAsText(fileObj._fileRef);
+  });
+}
+
+// Fallback size from profile string (FL6*75 → w=75, h=230 estimate)
+// Estimate actual part area using shoelace formula on arc-approximated outline
+// Arcs are approximated with intermediate points so curved parts (like quarter-rings)
+// report their real steel area rather than their bounding-box area
+function estimatePartArea(geom){
+  if(!geom) return 0;
+  const cutPoly = geom.polylines.find(pl=>pl.layer?.toUpperCase()==='CUT') || geom.polylines[0];
+  if(!cutPoly || cutPoly.verts.length < 2) return geom.w * geom.h;
+
+  // Build approximated polygon by inserting arc midpoints
+  const pts = [];
+  const verts = cutPoly.verts;
+  for(let i=0;i<verts.length;i++){
+    const v  = verts[i];
+    const vn = verts[(i+1)%verts.length];
+    pts.push({x:v.x, y:v.y});
+    if(Math.abs(v.bulge||0)>0.0001){
+      // Add 8 intermediate points along the arc
+      const dx=vn.x-v.x, dy=vn.y-v.y;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      const r=d*(1+v.bulge*v.bulge)/(4*Math.abs(v.bulge));
+      const s=(1-v.bulge*v.bulge)/(4*Math.abs(v.bulge));
+      const mx=(v.x+vn.x)/2, my=(v.y+vn.y)/2;
+      const cx=mx-s*dy*Math.sign(v.bulge), cy=my+s*dx*Math.sign(v.bulge);
+      const a1=Math.atan2(v.y-cy,v.x-cx);
+      let a2=Math.atan2(vn.y-cy,vn.x-cx);
+      if(v.bulge>0 && a2<a1) a2+=2*Math.PI;
+      if(v.bulge<0 && a2>a1) a2-=2*Math.PI;
+      for(let k=1;k<=8;k++){
+        const a=a1+(a2-a1)*k/9;
+        pts.push({x:cx+r*Math.cos(a), y:cy+r*Math.sin(a)});
+      }
+    }
+  }
+
+  // Shoelace formula
+  let area=0;
+  for(let i=0;i<pts.length;i++){
+    const j=(i+1)%pts.length;
+    area += pts[i].x*pts[j].y - pts[j].x*pts[i].y;
+  }
+  // Subtract hole areas
+  let holeArea=0;
+  for(const c of (geom.circles||[])) holeArea += Math.PI*c.r*c.r;
+
+  return Math.abs(area/2) - holeArea;
+}
+
+function sizeFromProfile(profile, partName){
+  if(profile){
+    const m = profile.match(/[A-Z]*(\d+(?:\.\d+)?)[*xX](\d+(?:\.\d+)?)/i);
+    if(m) return {w:parseFloat(m[2]), h:parseFloat(m[2])*2, circles:[], polylines:[], lines:[]};
+  }
+  // Last resort hash-based estimate
+  let h=0; for(const c of partName) h=(h*31+c.charCodeAt(0))&0xffffffff;
+  return {w:80+(Math.abs(h)%320), h:60+(Math.abs(h>>4)%180), circles:[], polylines:[], lines:[]};
+}
+
+// ═══════════════════════════════════════════════════════
+// TRUE-SHAPE NESTING — SVGnest integration
+// Converts DXF bulge polygons → SVG → SVGnest → placements
+// ═══════════════════════════════════════════════════════
+
+// Convert a DXF polyline (with bulge arcs) to a flat array of {x,y} points
+function polylineToPoints(verts, arcSteps=16){
+  const pts=[];
+  for(let i=0;i<verts.length;i++){
+    const v=verts[i], vn=verts[(i+1)%verts.length];
+    pts.push({x:v.x,y:v.y});
+    if(Math.abs(v.bulge||0)>0.0001){
+      const dx=vn.x-v.x, dy=vn.y-v.y;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      const r=d*(1+v.bulge*v.bulge)/(4*Math.abs(v.bulge));
+      const s=(1-v.bulge*v.bulge)/(4*Math.abs(v.bulge));
+      const mx=(v.x+vn.x)/2, my=(v.y+vn.y)/2;
+      const cx=mx-s*dy*Math.sign(v.bulge), cy=my+s*dx*Math.sign(v.bulge);
+      let a1=Math.atan2(v.y-cy,v.x-cx);
+      let a2=Math.atan2(vn.y-cy,vn.x-cx);
+      if(v.bulge>0&&a2<a1) a2+=2*Math.PI;
+      if(v.bulge<0&&a2>a1) a2-=2*Math.PI;
+      for(let k=1;k<arcSteps;k++){
+        const a=a1+(a2-a1)*k/arcSteps;
+        pts.push({x:cx+r*Math.cos(a), y:cy+r*Math.sin(a)});
+      }
+    }
+  }
+  return pts;
+}
+
+// Build SVG string for SVGnest from a list of items + sheet size
+function buildNestSvg(items, sheetW, sheetH){
+  const ns='http://www.w3.org/2000/svg';
+  let polys='';
+
+  // Sheet bin — must be first polygon, marked as the bin
+  polys+=`<polygon id="bin" points="0,0 ${sheetW},0 ${sheetW},${sheetH} 0,${sheetH}" style="fill:none;stroke:black"/>`;
+
+  for(let i=0;i<items.length;i++){
+    const item=items[i];
+    const cutPoly=(item.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT')||(item.polylines||[])[0];
+    let pts;
+    if(cutPoly&&cutPoly.verts.length>=2){
+      pts=polylineToPoints(cutPoly.verts);
+    } else {
+      // Fallback: bounding box rectangle
+      pts=[{x:0,y:0},{x:item.w,y:0},{x:item.w,y:item.h},{x:0,y:item.h}];
+    }
+    // SVGnest uses Y-down, DXF uses Y-up — flip Y
+    const maxY=Math.max(...pts.map(p=>p.y));
+    const ptStr=pts.map(p=>`${p.x.toFixed(2)},${(maxY-p.y).toFixed(2)}`).join(' ');
+    polys+=`<polygon id="part-${i}" data-idx="${i}" points="${ptStr}" style="fill:none;stroke:black"/>`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${sheetW}" height="${sheetH}">${polys}</svg>`;
+}
+
+// Calculate a sensible timeout based on the work involved
+// More parts = more NFP pairs to compute = more time needed
+function calcNestTimeout(items){
+  const n = items.length;
+
+  // Count unique shapes (unique DXF files) — NFP computation is O(n²) on unique pairs
+  const uniqueShapes = new Set(items.map(i=>i.dxfFile?.name||i.partName)).size;
+
+  // Count curved parts — curves need more polygon approximation steps
+  const curvedParts = items.filter(i=>{
+    const cutPoly=(i.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT');
+    return cutPoly&&cutPoly.verts.some(v=>Math.abs(v.bulge||0)>0.0001);
+  }).length;
+
+  // Base: 3s minimum
+  // +0.5s per unique shape pair (NFP computation)
+  // +1s per 10 total parts (placement iterations)
+  // +2s if any curved parts (more complex NFP geometry)
+  // Cap at 60s for very large jobs
+  const pairCost = (uniqueShapes * (uniqueShapes - 1) / 2) * 0.5;
+  const countCost = Math.floor(n / 10) * 1;
+  const curveCost = curvedParts > 0 ? 2 + Math.floor(curvedParts / 5) : 0;
+  const timeout = Math.min(60000, Math.max(3000, (3 + pairCost + countCost + curveCost) * 1000));
+
+  return { timeout, label: formatTimeout(timeout) };
+}
+
+function formatTimeout(ms){
+  if(ms < 10000) return `${(ms/1000).toFixed(0)} seconds`;
+  if(ms < 60000) return `${(ms/1000).toFixed(0)} seconds`;
+  return '60 seconds';
+}
+
+// Run SVGnest on one material group — returns Promise<nestResult>
+function runSvgNest(items, sheetW, sheetH, onProgress){
+  return new Promise((resolve)=>{
+    if(typeof SvgNest==='undefined'){
+      resolve(packShelfFallback(items, sheetW, sheetH));
+      return;
+    }
+
+    const {timeout, label} = calcNestTimeout(items);
+
+    // Update UI with calculated timeout
+    const timerEl = document.getElementById('nest-timer-label');
+    if(timerEl) timerEl.textContent = `Optimising for up to ${label}`;
+
+    // Countdown display
+    let remaining = Math.round(timeout/1000);
+    const countdownEl = document.getElementById('nest-countdown');
+    const countdownInterval = setInterval(()=>{
+      remaining--;
+      if(countdownEl && remaining > 0) countdownEl.textContent = `${remaining}s remaining`;
+    }, 1000);
+
+    // Build hidden SVG and inject into DOM
+    const container=document.createElement('div');
+    container.style.cssText='position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden';
+    container.innerHTML=buildNestSvg(items, sheetW, sheetH);
+    document.body.appendChild(container);
+
+    const svg=container.querySelector('svg');
+    const binEl=svg.querySelector('#bin');
+
+    SvgNest.config({
+      clipperScale: 10000000,
+      curveTolerance: 0.72,
+      spacing: 2,
+      rotations: 4,
+      populationSize: 10,
+      mutationRate: 10,
+      useHoles: false,
+      exploreConcave: true
+    });
+
+    SvgNest.parsesvg(svg);
+    SvgNest.setbin(binEl);
+
+    let bestSheets=null;
+    let resolved=false;
+
+    function finish(svgResult){
+      if(resolved) return;
+      resolved=true;
+      clearInterval(countdownInterval);
+      try{ SvgNest.stop(); }catch(e){}
+      if(container.parentNode) container.parentNode.removeChild(container);
+      if(svgResult) bestSheets=convertSvgNestResult(svgResult, items, sheetW, sheetH);
+      resolve(bestSheets || packShelfFallback(items, sheetW, sheetH));
+    }
+
+    SvgNest.start(
+      function(progress, svgResult){
+        onProgress&&onProgress(Math.round(progress*100));
+        if(svgResult) bestSheets=convertSvgNestResult(svgResult, items, sheetW, sheetH);
+      },
+      function(svgResult){ finish(svgResult); }
+    );
+
+    // Dynamic timeout
+    setTimeout(()=>finish(null), timeout);
+  });
+}
+
+// Convert SVGnest output SVG back to our placement format
+function convertSvgNestResult(svgResult, items, sheetW, sheetH){
+  // SVGnest returns an SVG with transformed polygons grouped by sheet
+  const sheets=[];
+  const parser=new DOMParser();
+
+  // svgResult may be an SVG element or HTML string
+  let svgDoc;
+  if(typeof svgResult==='string'){
+    svgDoc=parser.parseFromString(svgResult,'image/svg+xml').documentElement;
+  } else {
+    svgDoc=svgResult;
+  }
+
+  // Each <g> in the result represents one sheet
+  const groups=svgDoc.querySelectorAll('g');
+  if(!groups.length){
+    // Flat result — all on one sheet
+    const placements=[];
+    svgDoc.querySelectorAll('polygon[data-idx]').forEach(el=>{
+      const idx=parseInt(el.getAttribute('data-idx'));
+      const item=items[idx];
+      if(!item) return;
+      const t=el.getAttribute('transform')||'';
+      const {x,y,rot}=parseTransform(t);
+      placements.push({...item, x, y:sheetH-y-item.h, rotation:rot});
+    });
+    if(placements.length) sheets.push({index:1, placements, utilisation:calcUtil(placements,sheetW,sheetH)});
+  } else {
+    groups.forEach((g,gi)=>{
+      const placements=[];
+      g.querySelectorAll('polygon[data-idx]').forEach(el=>{
+        const idx=parseInt(el.getAttribute('data-idx'));
+        const item=items[idx];
+        if(!item) return;
+        const t=(g.getAttribute('transform')||'')+' '+(el.getAttribute('transform')||'');
+        const {x,y,rot}=parseTransform(t);
+        placements.push({...item, x, y:sheetH-y-item.h, rotation:rot});
+      });
+      if(placements.length) sheets.push({index:gi+1, placements, utilisation:calcUtil(placements,sheetW,sheetH)});
+    });
+  }
+
+  return sheets.length ? sheets : null;
+}
+
+function parseTransform(t){
+  let x=0,y=0,rot=0;
+  const tr=t.match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
+  if(tr){x=parseFloat(tr[1]);y=parseFloat(tr[2]);}
+  const ro=t.match(/rotate\(\s*([-\d.]+)/);
+  if(ro) rot=parseFloat(ro[1]);
+  return {x,y,rot};
+}
+
+function calcUtil(placements, sw, sh){
+  const area=placements.reduce((a,p)=>a+(p.actualArea||p.w*p.h),0);
+  return Math.min(99,Math.round(area/(sw*sh)*100));
+}
+
+// Shelf packer fallback (used when SVGnest unavailable or times out)
+function packShelfFallback(items, sw, sh, pad=10){
+  const sheets=[]; let cur={placements:[],usedArea:0}; let x=pad,y=pad,rh=0;
+  for(const item of items){
+    const pw=item.w+pad, ph=item.h+pad;
+    if(x+pw>sw-pad){x=pad;y+=rh+pad;rh=0;}
+    if(y+ph>sh-pad){sheets.push(cur);cur={placements:[],usedArea:0};x=pad;y=pad;rh=0;}
+    cur.placements.push({...item,x,y,rotation:0});
+    cur.usedArea+=item.w*item.h;
+    if(ph>rh) rh=ph;
+    x+=pw;
+  }
+  if(cur.placements.length) sheets.push(cur);
+  return sheets.map((s,idx)=>({
+    index:idx+1, placements:s.placements,
+    utilisation:calcUtil(s.placements,sw,sh),
+  }));
+}
+
+// ═══════════════════════════════════════════════════════
+// DEEPNEST LOCAL SERVER INTEGRATION
+// Connects to Node.js server running on localhost:3000
+// Falls back to SVGnest if server not available
+// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// NESTING SERVER — connects to Railway or localhost
+// URL priority: 1) user-saved setting, 2) Railway, 3) localhost fallback
+// ═══════════════════════════════════════════════════════
+const RAILWAY_URL   = 'https://nestflow-server-production.up.railway.app';
+const LOCALHOST_URL = 'http://localhost:3000';
+
+function getServerUrl(){
+  // If running from Railway (not a local file), use same origin as the page
+  if(window.location.protocol === 'https:' && window.location.hostname !== 'localhost'){
+    return window.location.origin;
+  }
+  return localStorage.getItem('nestflow_server_url') || RAILWAY_URL;
+}
+
+function setServerUrl(url){
+  localStorage.setItem('nestflow_server_url', url.replace(/\/$/, ''));
+}
+
+let DEEPNEST_URL = getServerUrl();
+let deepnestAvailable = false;
+let deepnestChecked = false;
+
+async function checkDeepnestServer(){
+  DEEPNEST_URL = getServerUrl();
+  try{
+    const r = await fetch(`${DEEPNEST_URL}/ping`, {method:'GET', signal:AbortSignal.timeout(3000)});
+    deepnestAvailable = r.ok;
+    if(deepnestAvailable){
+      const data = await r.json().catch(()=>({}));
+      updateServerStatus(DEEPNEST_URL, data.engine||'connected');
+      return;
+    }
+  } catch(e){ deepnestAvailable = false; }
+
+  // Try localhost fallback if Railway failed
+  if(DEEPNEST_URL !== LOCALHOST_URL){
+    try{
+      const r2 = await fetch(`${LOCALHOST_URL}/ping`, {method:'GET', signal:AbortSignal.timeout(1500)});
+      if(r2.ok){
+        deepnestAvailable = true;
+        DEEPNEST_URL = LOCALHOST_URL;
+        updateServerStatus(LOCALHOST_URL, 'local');
+        return;
+      }
+    } catch(e){}
+  }
+
+  deepnestAvailable = false;
+  deepnestChecked = true;
+  updateServerStatus(null, null);
+}
+
+function updateServerStatus(url, engine){
+  deepnestChecked = true;
+  const el = document.getElementById('server-status');
+  if(!el) return;
+  if(deepnestAvailable && url){
+    const label = url.includes('railway') ? 'Railway cloud' : 'Local server';
+    el.innerHTML = `<span style="color:var(--green)">● ${label} connected</span>`;
+  } else {
+    el.innerHTML = `<span style="color:var(--amber)">● No server — using browser nesting</span>`;
+  }
+}
+
+// Send geometry to Deepnest server, get placements back
+async function runDeepnest(items, sheetW, sheetH, onProgress){
+  // Build geometry payload — send polygon points for each item
+  const parts = items.map((item, idx)=>{
+    const cutPoly=(item.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT')||(item.polylines||[])[0];
+    const points = cutPoly
+      ? polylineToPoints(cutPoly.verts)
+      : [{x:0,y:0},{x:item.w,y:0},{x:item.w,y:item.h},{x:0,y:item.h}];
+    return { idx, partName:item.partName, w:item.w, h:item.h, points };
+  });
+
+  const payload = {
+    sheet: { w:sheetW, h:sheetH },
+    parts,
+    spacing: 2,
+    rotations: 4,
+  };
+
+  // POST geometry, get back placements with x/y/rotation per item
+  const resp = await fetch(`${DEEPNEST_URL}/nest`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload),
+    signal:AbortSignal.timeout(300000), // 5 min max
+  });
+
+  if(!resp.ok) throw new Error('Deepnest server error: '+resp.status);
+
+  const result = await resp.json();
+
+  // result.sheets = [{index, placements:[{idx, x, y, rotation}]}]
+  return result.sheets.map((s,si)=>({
+    index: s.index||si+1,
+    placements: s.placements.map(pl=>({
+      ...items[pl.idx],
+      x:pl.x, y:pl.y, rotation:pl.rotation||0,
+    })),
+    utilisation: calcUtil(s.placements.map(pl=>items[pl.idx]), sheetW, sheetH),
+  }));
+}
+
+async function runNesting(onlyGroupIdx=null){
+  // If nesting just one group, delegate to nestSingleGroup
+  if(onlyGroupIdx !== null){
+    const body=document.getElementById('nest-body');
+    const g=groupByMaterial(state.parts)[onlyGroupIdx];
+    if(!g) return;
+    body.innerHTML=`<div class="spinner-wrap"><div class="spinner"></div><p>Nesting ${g.material} ${g.thickness}…</p></div>`;
+    await nestSingleGroup(onlyGroupIdx);
+    return;
+  }
+
+  const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
+  const body = document.getElementById('nest-body');
+
+  // Check server availability fresh each time
+  await checkDeepnestServer();
+
+  const useDeepnest = deepnestAvailable;
+  const useSvgNest  = !useDeepnest && typeof SvgNest !== 'undefined';
+  const engineName  = useDeepnest ? 'Deepnest (local server)' : useSvgNest ? 'SVGnest' : 'Fast shelf packing';
+
+  const allItems=[];
+  for(const p of state.parts) for(let i=0;i<p.quantity;i++) allItems.push(p);
+  const {label:timeLabel} = useDeepnest ? {label:'depends on job size'} : calcNestTimeout(allItems);
+
+  body.innerHTML = `<div class="spinner-wrap"><div class="spinner"></div>
+    <p>Nesting with <strong>${engineName}</strong>…</p>
+    <p id="nest-timer-label" class="muted-sm" style="margin-top:6px">
+      ${useDeepnest ? 'Running Deepnest — large jobs handled efficiently' : `Optimising for up to ${timeLabel}`}
+    </p>
+    <p id="nest-countdown" class="muted-sm" style="margin-top:2px;font-family:'IBM Plex Mono',monospace;font-size:12px"></p>
+    <div id="nest-progress" style="width:220px;height:4px;background:var(--border);border-radius:2px;margin-top:10px;overflow:hidden">
+      <div id="nest-progress-bar" style="height:100%;background:var(--text);width:0%;transition:width .3s"></div>
+    </div>
+  </div>`;
+
+  // Read DXF geometry
+  const geomCache={};
+  for(const p of state.parts){
+    if(!p.dxfFile) continue;
+    const key = p.dxfFile.name;
+    if(!geomCache[key]){
+      const geom = await readDxfFile(p.dxfFile);
+      geomCache[key] = geom || sizeFromProfile(p.profile, p.partName);
+    }
+  }
+
+  const groups = groupByMaterial(state.parts);
+  const colorMap={};let ci=0;
+  for(const g of groups) for(const p of g.parts) if(!colorMap[p.partName]) colorMap[p.partName]=PART_COLORS[ci++%PART_COLORS.length];
+  state.partColorMap=colorMap;
+
+  const nestResults=[];
+  let groupIdx=0;
+  for(const g of groups){
+    const gi=groupIdx;
+    groupIdx++;
+
+    // Use per-group sheet size if set, otherwise use default
+    const selEl=document.getElementById('sheet-sel-'+gi);
+    const sizeIdx=selEl?parseInt(selEl.value)||0:defaultSizeIdx;
+    const sheet=SHEET_SIZES[sizeIdx];
+
+    const items=[];
+    for(const p of g.parts){
+      const geom = geomCache[p.dxfFile?.name] || sizeFromProfile(p.profile, p.partName);
+      const actualArea = estimatePartArea(geom);
+      for(let i=0;i<(p.quantity||1);i++){
+        items.push({
+          partId:p.id, partName:p.partName, dxfFile:p.dxfFile,
+          profile:p.profile, material:p.material, thickness:p.thickness,
+          w:geom.w, h:geom.h, actualArea,
+          circles:geom.circles||[], polylines:geom.polylines||[], lines:geom.lines||[],
+        });
+      }
+    }
+    items.sort((a,b)=>(b.actualArea||b.w*b.h)-(a.actualArea||a.w*a.h));
+
+    const timerEl=document.getElementById('nest-timer-label');
+    if(timerEl) timerEl.textContent=`Group ${groupIdx}/${groups.length}: ${g.material} ${g.thickness} (${items.length} parts) — ${sheet.label}`;
+
+    let sheets;
+    try{
+      if(useDeepnest){
+        sheets = await runDeepnest(items, sheet.w, sheet.h, (pct)=>{
+          const bar=document.getElementById('nest-progress-bar');
+          if(bar) bar.style.width=pct+'%';
+        });
+      } else {
+        sheets = await runSvgNest(items, sheet.w, sheet.h, (pct)=>{
+          const bar=document.getElementById('nest-progress-bar');
+          if(bar) bar.style.width=pct+'%';
+        });
+      }
+    } catch(e){
+      console.warn('Nesting error, using fallback:', e);
+      sheets = packShelfFallback(items, sheet.w, sheet.h);
+    }
+
+    nestResults.push({...g, sheetSize:sheet, sheets, totalParts:items.length});
+  }
+
+  state.nestResults=nestResults;
+  state.activeGroup=0;
+  renderNestScreen();
+}
+
+function reNest(){ reNestAll(); }
+function reNestAll(){ runNesting(null); }
+function reNestActive(){
+  // Only re-nest the currently visible group
+  const g = state.nestResults[state.activeGroup];
+  if(!g) return;
+  runNesting(state.activeGroup);
+}
+
+// Nest a single group by index, or all if groupIdx is null
+async function nestSingleGroup(groupIdx){
+  const groups = groupByMaterial(state.parts);
+  const g = groups[groupIdx];
+  if(!g) return;
+
+  // Get sheet size for this specific group
+  const selId = 'sheet-sel-'+groupIdx;
+  const selEl = document.getElementById(selId);
+  const sizeIdx = selEl ? parseInt(selEl.value)||0 : parseInt(document.getElementById('sheet-size-sel').value)||0;
+  const sheet = SHEET_SIZES[sizeIdx];
+
+  // Read geometry
+  const geomCache={};
+  for(const p of g.parts){
+    if(!p.dxfFile) continue;
+    const key=p.dxfFile.name;
+    if(!geomCache[key]){
+      const geom=await readDxfFile(p.dxfFile);
+      geomCache[key]=geom||sizeFromProfile(p.profile,p.partName);
+    }
+  }
+
+  const items=[];
+  for(const p of g.parts){
+    const geom=geomCache[p.dxfFile?.name]||sizeFromProfile(p.profile,p.partName);
+    const actualArea=estimatePartArea(geom);
+    for(let i=0;i<(p.quantity||1);i++){
+      items.push({
+        partId:p.id,partName:p.partName,dxfFile:p.dxfFile,
+        profile:p.profile,material:p.material,thickness:p.thickness,
+        w:geom.w,h:geom.h,actualArea,
+        circles:geom.circles||[],polylines:geom.polylines||[],lines:geom.lines||[],
+      });
+    }
+  }
+  items.sort((a,b)=>(b.actualArea||b.w*b.h)-(a.actualArea||a.w*a.h));
+
+  const useDeepnest=deepnestAvailable;
+  let sheets;
+  try{
+    if(useDeepnest) sheets=await runDeepnest(items,sheet.w,sheet.h,()=>{});
+    else sheets=await runSvgNest(items,sheet.w,sheet.h,()=>{});
+  }catch(e){
+    sheets=packShelfFallback(items,sheet.w,sheet.h);
+  }
+
+  // Update just this group's result
+  state.nestResults[groupIdx]={...g,sheetSize:sheet,sheets,totalParts:items.length};
+  state.activeGroup=groupIdx;
+  renderNestScreen();
+}
+
+function renderNestScreen(){
+  const results = state.nestResults;
+  const groups  = groupByMaterial(state.parts);
+  const totalSheets = results.reduce((a,g)=>a+g.sheets.length,0);
+  const totalParts  = results.reduce((a,g)=>a+g.totalParts,0);
+  const avgUtil = results.length
+    ? Math.round(results.reduce((a,g)=>a+(g.sheets.reduce((s,sh)=>s+sh.utilisation,0)/(g.sheets.length||1)),0)/results.length)
+    : 0;
+
+  // ── Per-group control rows (sheet size selector + individual nest button) ──
+  const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
+  document.getElementById('group-controls').innerHTML = groups.map((g,i)=>{
+    const result = results[i];
+    const currentSizeIdx = result ? SHEET_SIZES.findIndex(s=>s.label===result.sheetSize?.label) : defaultSizeIdx;
+    const usedIdx = currentSizeIdx>=0 ? currentSizeIdx : defaultSizeIdx;
+    const sheetInfo = result ? `${result.sheets.length} sheet${result.sheets.length!==1?'s':''} · ${Math.round(result.sheets.reduce((a,s)=>a+s.utilisation,0)/(result.sheets.length||1))}% util` : 'Not nested yet';
+    return `<div class="group-ctrl${i===state.activeGroup?' active-group':''}">
+      <span class="group-ctrl-label">${g.material} ${g.thickness} <span style="color:var(--text3);font-weight:400">(${g.parts.reduce((a,p)=>a+p.quantity,0)} pcs)</span></span>
+      <select class="sel" id="sheet-sel-${i}" style="font-size:12px;padding:4px 8px">
+        ${SHEET_SIZES.map((s,j)=>`<option value="${j}"${j===usedIdx?' selected':''}>${s.label}</option>`).join('')}
+      </select>
+      <button class="btn btn-sm" onclick="runNesting(${i})">↺ Nest this</button>
+      <span class="group-ctrl-status">${sheetInfo}</span>
+      ${result?`<button class="btn btn-sm" onclick="setGroup(${i})" style="margin-left:4px">View →</button>`:''}
+    </div>`;
+  }).join('');
+
+  document.getElementById('nest-stats').innerHTML=`
+    <div class="stat"><div class="stat-lbl">Sheets used</div><div class="stat-val">${totalSheets}</div></div>
+    <div class="stat"><div class="stat-lbl">Avg utilisation</div><div class="stat-val ${avgUtil>=80?'g':avgUtil>=60?'a':'r'}">${avgUtil}%</div></div>
+    <div class="stat"><div class="stat-lbl">Parts placed</div><div class="stat-val g">${totalParts}/${totalParts}</div></div>
+    <div class="stat"><div class="stat-lbl">Est. scrap</div><div class="stat-val a">${100-avgUtil}%</div></div>
+  `;
+
+  document.getElementById('group-tabs').innerHTML = results.map((g,i)=>
+    `<button class="gtab${i===state.activeGroup?' active':''}" onclick="setGroup(${i})">
+      ${g.material} ${g.thickness}<span class="gtab-ct">${g.sheets.length} sheet${g.sheets.length!==1?'s':''}</span>
+    </button>`
+  ).join('');
+
+  renderSheets();
+  renderLegend();
+  document.getElementById('nest-summary').textContent = `${totalSheets} sheets · ${avgUtil}% avg utilisation`;
+}
+
+function setGroup(i){ state.activeGroup=i; renderNestScreen(); }
+
+function renderSheets(){
+  const g = state.nestResults[state.activeGroup];
+  if(!g){ document.getElementById('nest-body').innerHTML=''; return; }
+  const {w:SW, h:SH} = g.sheetSize;
+  const PW=260, PH=Math.round(PW*(SH/SW));
+  const sx=PW/SW, sy=PH/SH;
+
+  document.getElementById('nest-body').innerHTML=`<div class="sheet-grid">${
+    g.sheets.map(sheet=>`
+      <div class="sheet-card">
+        <div class="sheet-canvas" style="width:${PW}px;height:${PH}px">
+          ${sheet.placements.map(p=>{
+            const px=Math.round(p.x*sx), py=Math.round(p.y*sy);
+            const pw=Math.max(4,Math.round(p.w*sx)), ph=Math.max(4,Math.round(p.h*sy));
+            const holes=(p.circles||[]).map(c=>{
+              const cr=Math.max(1,Math.round(c.r*sx));
+              const cx=Math.round(c.cx*sx), cy=Math.round(c.cy*sy);
+              return `<div style="position:absolute;left:${cx-cr}px;top:${cy-cr}px;width:${cr*2}px;height:${cr*2}px;border-radius:50%;background:var(--surface2);border:1px solid rgba(0,0,0,.25);"></div>`;
+            }).join('');
+            return `<div class="part-block" data-tip="${p.partName} (${Math.round(p.w)}×${Math.round(p.h)}mm)" style="left:${px}px;top:${py}px;width:${pw}px;height:${ph}px;background:${state.partColorMap[p.partName]||'#ccc'};">${holes}</div>`;
+          }).join('')}
+          <div class="util-tag">${sheet.utilisation}%</div>
+        </div>
+        <div class="sheet-foot">
+          <span class="sheet-num">Sheet ${sheet.index}</span>
+          <span class="sheet-ct">${sheet.placements.length} parts</span>
+        </div>
+      </div>`).join('')
+  }</div>`;
+}
+
+function renderLegend(){
+  const g = state.nestResults[state.activeGroup];
+  if(!g) return;
+  const names = [...new Set(g.parts.map(p=>p.partName))];
+  document.getElementById('nest-legend').innerHTML = names.map(n=>
+    `<span class="legend-item"><span class="legend-sw" style="background:${state.partColorMap[n]}"></span>${n}</span>`
+  ).join('');
+}
+
+function goExport(){
+  goTo(3);
+  renderExportScreen();
+}
+
+// ═══════════════════════════════════════════════════════
+// DXF EXPORT — writes geometry matching CorelDRAW format
+// Outer rect → LWPOLYLINE on CUT layer (or real geometry if available)
+// Holes → LWPOLYLINE with bulge=1 on layer 18
+// Curved outlines → LWPOLYLINE with original bulge values, offset to nested position
+// ═══════════════════════════════════════════════════════
+function r3(n){ return Math.round(n*1000)/1000; }
+
+function genDxf(sheet, sw, sh){
+  // Collect all unique layers from placements
+  const layerSet = new Set(['SHEET_BORDER','CUT','18','LABELS']);
+  for(const p of sheet.placements){
+    for(const pl of (p.polylines||[])) if(pl.layer) layerSet.add(pl.layer);
+    for(const c of (p.circles||[])) if(c.layer) layerSet.add(c.layer);
+  }
+  const layerDefs = [...layerSet].map(l=>
+    `0\nLAYER\n2\n${l}\n70\n0\n62\n${l==='CUT'?1:l==='18'?5:7}\n6\nCONTINUOUS`
+  ).join('\n');
+  const layers = `0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n${layerSet.size}\n${layerDefs}\n0\nENDTAB\n0\nENDSEC\n`;
+
+  let ent='';
+
+  // Helper: rotate a point around centre by angle (degrees)
+  function rotPt(x, y, cx, cy, deg){
+    if(!deg) return {x,y};
+    const rad=deg*Math.PI/180;
+    const dx=x-cx, dy=y-cy;
+    return {
+      x: cx + dx*Math.cos(rad) - dy*Math.sin(rad),
+      y: cy + dx*Math.sin(rad) + dy*Math.cos(rad),
+    };
+  }
+
+  for(const p of sheet.placements){
+    const ox=p.x, oy=p.y;
+    const rot=p.rotation||0;
+    // Rotate around part centre
+    const pcx=p.w/2, pcy=p.h/2;
+
+    // Helper: transform a vertex — rotate then translate
+    const tv=(vx,vy)=>{
+      const r=rotPt(vx,vy,pcx,pcy,rot);
+      return {x:r3(ox+r.x), y:r3(oy+r.y)};
+    };
+
+    // ── Try to write the real CUT outline with bulge values preserved ──
+    const cutPoly = (p.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT');
+    if(cutPoly && cutPoly.verts.length>=2){
+      ent += `0\nLWPOLYLINE\n8\nCUT\n62\n1\n6\nCONTINUOUS\n90\n${cutPoly.verts.length}\n70\n1\n`;
+      for(const v of cutPoly.verts){
+        const t=tv(v.x,v.y);
+        // Bulge sign flips when mirrored but not for pure rotation
+        ent += `10\n${t.x}\n20\n${t.y}\n42\n${r3(v.bulge||0)}\n`;
+      }
+    } else {
+      ent += `0\nLWPOLYLINE\n8\nCUT\n62\n1\n6\nCONTINUOUS\n90\n4\n70\n1\n`;
+      [{x:0,y:0},{x:p.w,y:0},{x:p.w,y:p.h},{x:0,y:p.h}].forEach(v=>{
+        const t=tv(v.x,v.y);
+        ent += `10\n${t.x}\n20\n${t.y}\n42\n0.0\n`;
+      });
+    }
+
+    // ── Write any other non-CUT, non-hole polylines ──
+    for(const pl of (p.polylines||[])){
+      if(pl.layer?.toUpperCase()==='CUT') continue;
+      if(pl.verts.length===2 && Math.abs(Math.abs(pl.verts[0].bulge||0)-1)<0.01) continue;
+      ent += `0\nLWPOLYLINE\n8\n${pl.layer||'CUT'}\n62\n7\n6\nCONTINUOUS\n90\n${pl.verts.length}\n70\n${pl.closed?1:0}\n`;
+      for(const v of pl.verts){
+        const t=tv(v.x,v.y);
+        ent += `10\n${t.x}\n20\n${t.y}\n42\n${r3(v.bulge||0)}\n`;
+      }
+    }
+
+    // ── Holes ──
+    for(const c of (p.circles||[])){
+      const tc=tv(c.cx,c.cy);
+      const holeLayer = c.layer || '18';
+      ent += `0\nLWPOLYLINE\n8\n${holeLayer}\n62\n5\n6\nCONTINUOUS\n90\n2\n70\n1\n`;
+      ent += `10\n${r3(tc.x-c.r)}\n20\n${r3(tc.y)}\n42\n1.0\n`;
+      ent += `10\n${r3(tc.x+c.r)}\n20\n${r3(tc.y)}\n42\n1.0\n`;
+    }
+
+    // ── Part label ──
+    const tl=tv(2, p.h-8);
+    ent += `0\nTEXT\n8\nLABELS\n62\n7\n10\n${tl.x}\n20\n${tl.y}\n30\n0.0\n40\n5.0\n1\n${p.partName}  ${p.profile||''}  Qty:1\n`;
+  }
+
+  // Sheet border
+  ent += `0\nLWPOLYLINE\n8\nSHEET_BORDER\n62\n7\n90\n4\n70\n1\n`;
+  ent += `10\n0\n20\n0\n42\n0.0\n10\n${sw}\n20\n0\n42\n0.0\n10\n${sw}\n20\n${sh}\n42\n0.0\n10\n0\n20\n${sh}\n42\n0.0\n`;
+
+  return `0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n` +
+    layers +
+    `0\nSECTION\n2\nENTITIES\n${ent}0\nENDSEC\n0\nEOF\n`;
+}
+
+function downloadDxf(groupIdx, sheetIdx){
+  const g = state.nestResults[groupIdx];
+  const sheet = g.sheets[sheetIdx];
+  const job = document.getElementById('job-name').value || 'JOB';
+  const fname = `${job}_${g.material.replace(/\s/g,'-')}-${g.thickness}_sheet${sheet.index}.dxf`;
+  const content = genDxf(sheet, g.sheetSize.w, g.sheetSize.h);
+  triggerDownload(fname, content, 'application/dxf');
+  document.getElementById(`dl-btn-${groupIdx}-${sheetIdx}`).className='btn btn-sm btn-saved';
+  document.getElementById(`dl-btn-${groupIdx}-${sheetIdx}`).textContent='✓ Saved';
+}
+
+function downloadAll(){
+  state.nestResults.forEach((g,gi)=>g.sheets.forEach((_,si)=>downloadDxf(gi,si)));
+}
+
+function triggerDownload(filename, content, type){
+  const blob = new Blob([content],{type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function exportCSV(){
+  const job = document.getElementById('job-name').value||'JOB';
+  const lines=[`NestFlow Job Report — ${job}`,`Generated: ${new Date().toLocaleString()}`,'',
+    'PART LIST','Part Name,Material,Thickness,Quantity',
+    ...state.parts.map(p=>`${p.partName},${p.material},${p.thickness},${p.quantity}`),'',
+    'MATERIAL USAGE','Material,Thickness,Sheets',
+    ...state.nestResults.map(g=>`${g.material},${g.thickness},${g.sheets.length}`),'',
+    `Total sheets: ${state.nestResults.reduce((a,g)=>a+g.sheets.length,0)}`,
+    `Total pieces: ${state.parts.reduce((a,p)=>a+p.quantity,0)}`];
+  triggerDownload(`${job}_report.csv`, lines.join('\n'), 'text/csv');
+}
+
+function renderExportScreen(){
+  const job = document.getElementById('job-name').value||'JOB';
+  const parts = state.parts;
+  const results = state.nestResults;
+  const totalSheets = results.reduce((a,g)=>a+g.sheets.length,0);
+
+  // Files list
+  let filesHtml='';
+  results.forEach((g,gi)=>{
+    g.sheets.forEach((sheet,si)=>{
+      const fname=`${job}_${g.material.replace(/\s/g,'-')}-${g.thickness}_sheet${sheet.index}.dxf`;
+      filesHtml+=`<div class="export-file">
+        <span style="font-size:18px">📄</span>
+        <div class="ef-info">
+          <div class="ef-name">${fname}</div>
+          <div class="ef-meta">${g.material} ${g.thickness} · ${sheet.placements.length} parts · ${sheet.utilisation}% utilisation</div>
+        </div>
+        <button class="btn btn-sm" id="dl-btn-${gi}-${si}" onclick="downloadDxf(${gi},${si})">↓ Save</button>
+      </div>`;
+    });
+  });
+  document.getElementById('export-files').innerHTML = filesHtml;
+
+  // Parts table
+  document.getElementById('export-tbody').innerHTML = parts.map(p=>
+    `<tr><td class="mono fw5">${p.partName}</td><td style="text-align:center;font-weight:500">${p.quantity}</td><td>${p.material}</td><td>${p.thickness}</td></tr>`
+  ).join('');
+  document.getElementById('export-total').textContent =
+    `${parts.reduce((a,p)=>a+p.quantity,0)} pieces across ${parts.length} part types`;
+
+  // Material summary
+  let matHtml = results.map(g=>`
+    <div class="mat-row">
+      <span style="color:var(--text2)">${g.material} ${g.thickness}</span>
+      <span class="mono">${g.sheets.length}× ${g.sheetSize.label}</span>
+    </div>`).join('');
+  matHtml += `<div class="mat-row mat-total"><span>Total sheets</span><span class="mono">${totalSheets}</span></div>`;
+  document.getElementById('material-summary').innerHTML = matHtml;
+
+  document.getElementById('export-done').textContent = `✓ Job complete — ${job}`;
+}
+
+function newJob(){
+  // Auto-save completed job to history before resetting
+  saveJobToHistory();
+
+  state={step:0,cutListName:'',dxfFiles:[],parts:[],nestResults:[],activeGroup:0,partColorMap:{}};
+  document.getElementById('dz-cl').classList.remove('loaded');
+  document.getElementById('dz-cl').innerHTML=`<div class="dz-icon">📋</div><p class="dz-title">Click to open cut list</p><p class="dz-sub">Supports .xlsx, .xls, .csv</p>`;
+  document.getElementById('dz-dxf').classList.remove('loaded');
+  document.getElementById('dz-dxf').innerHTML=`<div class="dz-icon">📁</div><p class="dz-title">Click to select DXF files</p><p class="dz-sub">Select all your .dxf files at once</p>`;
+  document.getElementById('import-files').style.display='none';
+  document.getElementById('import-notif').style.display='none';
+  document.getElementById('btn-match').disabled=true;
+  document.getElementById('import-hint').style.display='';
+  document.getElementById('inp-cl').value='';
+  document.getElementById('inp-dxf').value='';
+  const cur = document.getElementById('job-name').value;
+  const n = parseInt(cur.replace(/\D/g,''))||42;
+  document.getElementById('job-name').value='JOB-'+String(n+1).padStart(4,'0');
+  goTo(0);
+}
+
+// ═══════════════════════════════════════════════════════
+// SERVER SETTINGS
+// ═══════════════════════════════════════════════════════
+function showServerSettings(){
+  const modal = document.getElementById('server-modal');
+  document.getElementById('server-url-input').value = getServerUrl();
+  document.getElementById('server-current-url').textContent = 'Current: ' + getServerUrl();
+  document.getElementById('server-test-result').textContent = '';
+  modal.classList.add('open');
+}
+
+function closeServerSettings(){
+  document.getElementById('server-modal').classList.remove('open');
+}
+
+function setQuickUrl(url){
+  document.getElementById('server-url-input').value = url;
+}
+
+async function testServerUrl(){
+  const url = document.getElementById('server-url-input').value.trim().replace(/\/$/,'');
+  const result = document.getElementById('server-test-result');
+  result.textContent = 'Testing…';
+  result.style.color = 'var(--text3)';
+  try{
+    const r = await fetch(`${url}/ping`, {method:'GET', signal:AbortSignal.timeout(5000)});
+    if(r.ok){
+      const data = await r.json().catch(()=>({}));
+      result.textContent = '✓ Connected — ' + (data.engine||'server responding');
+      result.style.color = 'var(--green)';
+    } else {
+      result.textContent = '✗ Server returned error ' + r.status;
+      result.style.color = 'var(--red)';
+    }
+  } catch(e){
+    result.textContent = '✗ Could not reach server — check the URL';
+    result.style.color = 'var(--red)';
+  }
+}
+
+async function saveServerUrl(){
+  const url = document.getElementById('server-url-input').value.trim().replace(/\/$/,'');
+  if(!url){ alert('Please enter a URL'); return; }
+  setServerUrl(url);
+  DEEPNEST_URL = url;
+  closeServerSettings();
+  await checkDeepnestServer();
+}
+
+// ═══════════════════════════════════════════════════════
+// JOB HISTORY — saves to localStorage
+// ═══════════════════════════════════════════════════════
+const HISTORY_KEY = 'nestflow_job_history';
+
+function loadHistory(){
+  try{ return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]'); }
+  catch(e){ return []; }
+}
+
+function saveHistory(jobs){
+  try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(jobs)); }
+  catch(e){ console.warn('Could not save history:', e); }
+}
+
+function saveJobToHistory(){
+  if(!state.nestResults || !state.nestResults.length) return;
+  if(!state.parts || !state.parts.length) return;
+
+  const jobName = document.getElementById('job-name').value || 'Unknown job';
+  const totalSheets = state.nestResults.reduce((a,g)=>a+g.sheets.length,0);
+  const totalParts  = state.parts.reduce((a,p)=>a+p.quantity,0);
+  const avgUtil = state.nestResults.length
+    ? Math.round(state.nestResults.reduce((a,g)=>a+(g.sheets.reduce((s,sh)=>s+sh.utilisation,0)/(g.sheets.length||1)),0)/state.nestResults.length)
+    : 0;
+
+  const record = {
+    id: Date.now(),
+    jobName,
+    date: new Date().toLocaleString(),
+    cutListName: state.cutListName,
+    totalParts,
+    totalSheets,
+    avgUtil,
+    groups: state.nestResults.map(g=>({
+      material: g.material,
+      thickness: g.thickness,
+      parts: g.totalParts,
+      sheets: g.sheets.length,
+      sheetSize: g.sheetSize?.label||'—',
+      util: Math.round(g.sheets.reduce((a,s)=>a+s.utilisation,0)/(g.sheets.length||1)),
+    })),
+    partTypes: [...new Set(state.parts.map(p=>p.partName))].length,
+  };
+
+  const history = loadHistory();
+  history.unshift(record); // newest first
+  // Keep last 100 jobs
+  if(history.length > 100) history.splice(100);
+  saveHistory(history);
+}
+
+function showJobHistory(){
+  const history = loadHistory();
+  const modal = document.getElementById('history-modal');
+  const body  = document.getElementById('history-body');
+  const count = document.getElementById('history-count');
+
+  count.textContent = `${history.length} job${history.length!==1?'s':''}`;
+
+  if(!history.length){
+    body.innerHTML = `<div class="history-empty">No jobs saved yet — complete a job and click "+ New job" to save it here.</div>`;
+  } else {
+    body.innerHTML = history.map(job=>`
+      <div class="history-job" id="hjob-${job.id}">
+        <div class="hj-header">
+          <span class="hj-name">${job.jobName}</span>
+          <span class="badge bb">${job.cutListName||'—'}</span>
+          <span class="hj-date">${job.date}</span>
+        </div>
+        <div class="hj-stats">
+          <div class="hj-stat"><div class="hj-stat-lbl">Part types</div><div class="hj-stat-val">${job.partTypes}</div></div>
+          <div class="hj-stat"><div class="hj-stat-lbl">Total pieces</div><div class="hj-stat-val">${job.totalParts}</div></div>
+          <div class="hj-stat"><div class="hj-stat-lbl">Sheets used</div><div class="hj-stat-val">${job.totalSheets}</div></div>
+          <div class="hj-stat"><div class="hj-stat-lbl">Avg utilisation</div><div class="hj-stat-val ${job.avgUtil>=70?'green':job.avgUtil>=50?'amber':'red'}">${job.avgUtil}%</div></div>
+        </div>
+        <div class="hj-groups">
+          ${job.groups.map(g=>`<span class="hj-group">${g.material} ${g.thickness} · ${g.sheets} sheet${g.sheets!==1?'s':''} · ${g.util}% · ${g.sheetSize}</span>`).join('')}
+        </div>
+        <div class="hj-actions">
+          <button class="btn btn-sm" onclick="exportJobCSV(${job.id})">↓ Export CSV</button>
+          <button class="btn btn-sm hj-del" onclick="deleteJob(${job.id})">Delete</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  modal.classList.add('open');
+}
+
+function closeHistory(){
+  document.getElementById('history-modal').classList.remove('open');
+}
+
+function deleteJob(id){
+  if(!confirm('Delete this job record?')) return;
+  const history = loadHistory().filter(j=>j.id!==id);
+  saveHistory(history);
+  showJobHistory(); // refresh
+}
+
+function clearHistory(){
+  if(!confirm('Clear all job history? This cannot be undone.')) return;
+  saveHistory([]);
+  showJobHistory();
+}
+
+function exportJobCSV(id){
+  const job = loadHistory().find(j=>j.id===id);
+  if(!job) return;
+  const lines=[
+    `NestFlow Job Report`,
+    `Job: ${job.jobName}`,
+    `Date: ${job.date}`,
+    `Cut list: ${job.cutListName||'—'}`,
+    '',
+    'SUMMARY',
+    `Part types,${job.partTypes}`,
+    `Total pieces,${job.totalParts}`,
+    `Sheets used,${job.totalSheets}`,
+    `Avg utilisation,${job.avgUtil}%`,
+    '',
+    'MATERIAL GROUPS',
+    'Material,Thickness,Parts,Sheets,Sheet size,Utilisation',
+    ...job.groups.map(g=>`${g.material},${g.thickness},${g.parts},${g.sheets},${g.sheetSize},${g.util}%`),
+  ];
+  const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`${job.jobName}_report.csv`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+// Close history modal on Escape
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    closeModal();
+    closeHistory();
+  }
+});
+</script>
+</body>
+</html>

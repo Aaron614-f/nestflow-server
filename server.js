@@ -46,6 +46,22 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Serve nestflow.html as the main app
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html' || req.url === '/nestflow.html')) {
+    const fs = require('fs');
+    const path = require('path');
+    const htmlPath = path.join(__dirname, 'nestflow.html');
+    if (fs.existsSync(htmlPath)) {
+      const html = fs.readFileSync(htmlPath, 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } else {
+      res.writeHead(404);
+      res.end('nestflow.html not found — please upload it to the server repo');
+    }
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
 });
 

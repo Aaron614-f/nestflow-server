@@ -10,7 +10,7 @@
 const http = require('http');
 const ClipperLib = require('clipper-lib');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 const SCALE = 10000000; // clipper integer scale
 
 // ─────────────────────────────────────────────

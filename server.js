@@ -10,7 +10,7 @@
 const http = require('http');
 const ClipperLib = require('clipper-lib');
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const SCALE = 10000000; // clipper integer scale
 
 // ─────────────────────────────────────────────
@@ -49,7 +49,7 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404); res.end('Not found');
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  +==========================================+');
   console.log('  |  NestFlow Nesting Server  v2.0          |');

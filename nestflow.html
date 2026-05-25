@@ -348,20 +348,20 @@ tr.row-unmatched:hover td{background:#ffecec!important}
       <div class="two-col">
         <div>
           <p class="slabel">Cut list from supplier</p>
-          <div class="dropzone" id="dz-cl" onclick="document.getElementById('inp-cl').click()">
+          <label for="inp-cl" class="dropzone" id="dz-cl" style="cursor:pointer">
             <div class="dz-icon">📋</div>
             <p class="dz-title">Click to open cut list</p>
             <p class="dz-sub">Supports .xlsx, .xls, .csv</p>
-          </div>
+          </label>
           <input type="file" id="inp-cl" accept=".xlsx,.xls,.csv" style="display:none" onchange="loadCutList(event)">
         </div>
         <div>
           <p class="slabel">DXF parts folder</p>
-          <div class="dropzone" id="dz-dxf" onclick="document.getElementById('inp-dxf').click()">
+          <label for="inp-dxf" class="dropzone" id="dz-dxf" style="cursor:pointer">
             <div class="dz-icon">📁</div>
             <p class="dz-title">Click to select DXF files</p>
             <p class="dz-sub">Select all your .dxf files at once</p>
-          </div>
+          </label>
           <input type="file" id="inp-dxf" accept=".dxf,.dwg" multiple style="display:none" onchange="loadDxf(event)">
         </div>
       </div>
@@ -641,11 +641,11 @@ function updateImportUI(){
 
   if(hasCL){
     dzCL.classList.add('loaded');
-    dzCL.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.cutListName}</p><p class="dz-sub">${state.parts.length} parts loaded</p>`;
+    dzCL.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.cutListName}</p><p class="dz-sub">${state.parts.length} parts loaded — click to change</p>`;
   }
   if(hasDXF){
     dzDXF.classList.add('loaded');
-    dzDXF.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.dxfFiles.length} DXF files</p><p class="dz-sub">Ready to match</p>`;
+    dzDXF.innerHTML = `<div class="dz-icon">✅</div><p class="dz-title">${state.dxfFiles.length} DXF files</p><p class="dz-sub">Ready to match — click to change</p>`;
   }
 
   const filesDiv = document.getElementById('import-files');

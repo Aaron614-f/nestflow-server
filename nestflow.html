@@ -1815,7 +1815,8 @@ function parseTransform(t){
 }
 
 function calcUtil(placements, sw, sh){
-  const area=placements.reduce((a,p)=>a+(p.actualArea||p.w*p.h),0);
+  // Prefer actual steel area (shoelace); fall back to placed bounding box (accounts for rotation)
+  const area=placements.reduce((a,p)=>a+(p.actualArea||(p.placedW||p.w)*(p.placedH||p.h)),0);
   return Math.min(99,Math.round(area/(sw*sh)*100));
 }
 
@@ -1936,7 +1937,7 @@ async function runDeepnest(items, sheetW, sheetH, onProgress){
       w: pl.placedW || items[pl.idx]?.w || 0,
       h: pl.placedH || items[pl.idx]?.h || 0,
     })),
-    utilisation: calcUtil(s.placements.map(pl=>items[pl.idx]), sheetW, sheetH),
+    utilisation: calcUtil(s.placements.map(pl=>({...items[pl.idx], actualArea: items[pl.idx]?.actualArea})), sheetW, sheetH),
   }));
 }
 

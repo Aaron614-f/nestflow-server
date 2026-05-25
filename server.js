@@ -198,9 +198,9 @@ function findBestPosition(pts, occupied, sheetW, sheetH, pad) {
   // Shift polygon so its bbox starts at 0,0
   const norm = pts.map(p => ({ x: p.x - bb.minX, y: p.y - bb.minY }));
 
-  // Grid search — try positions in a grid pattern
-  const stepX = Math.max(10, Math.min(50, sheetW / 30));
-  const stepY = Math.max(10, Math.min(50, sheetH / 30));
+  // Grid search — coarse pass to find candidate region
+  const stepX = Math.max(5, Math.min(20, sheetW / 60));
+  const stepY = Math.max(5, Math.min(20, sheetH / 60));
 
   let bestX = null, bestY = null, bestScore = Infinity;
 
@@ -208,8 +208,8 @@ function findBestPosition(pts, occupied, sheetW, sheetH, pad) {
     for (let gx = pad; gx <= sheetW - bb.w - pad; gx += stepX) {
       const candidate = norm.map(p => ({ x: p.x + gx, y: p.y + gy }));
 
-      // Check within sheet
-      if (!fitsInSheet(candidate, sheetW, sheetH, 0)) continue;
+      // Check within sheet (enforce edge spacing)
+      if (!fitsInSheet(candidate, sheetW, sheetH, pad)) continue;
 
       // Check no overlap with occupied using Clipper
       if (overlaps(candidate, occupied)) continue;
@@ -224,14 +224,19 @@ function findBestPosition(pts, occupied, sheetW, sheetH, pad) {
     }
   }
 
-  // Fine-tune: try to push further toward top-left
+  // Fine-tune: search a window around the coarse best hit at 1mm resolution
   if (bestX !== null) {
-    // Try smaller steps around best position
-    const fineStep = 2;
-    for (let fy = Math.max(pad, bestY - stepY); fy <= bestY; fy += fineStep) {
-      for (let fx = Math.max(pad, bestX - stepX); fx <= bestX; fx += fineStep) {
+    const fineStep = 1;
+    const windowX = stepX + fineStep;
+    const windowY = stepY + fineStep;
+    const fyMin = Math.max(pad, bestY - windowY);
+    const fyMax = Math.min(sheetH - bb.h - pad, bestY + windowY);
+    const fxMin = Math.max(pad, bestX - windowX);
+    const fxMax = Math.min(sheetW - bb.w - pad, bestX + windowX);
+    for (let fy = fyMin; fy <= fyMax; fy += fineStep) {
+      for (let fx = fxMin; fx <= fxMax; fx += fineStep) {
         const candidate = norm.map(p => ({ x: p.x + fx, y: p.y + fy }));
-        if (!fitsInSheet(candidate, sheetW, sheetH, 0)) continue;
+        if (!fitsInSheet(candidate, sheetW, sheetH, pad)) continue;
         if (overlaps(candidate, occupied)) continue;
         const score = fy * sheetW + fx;
         if (score < bestScore) {
@@ -306,7 +311,7 @@ function overlaps(candidate, occupied) {
   // If intersection area > tiny threshold, they overlap
   if (!solution || solution.length === 0) return false;
   const area = Math.abs(ClipperLib.Clipper.Area(solution[0])) / (SCALE * SCALE);
-  return area > 0.5; // 0.5 mm² threshold
+  return area > 0.01; // 0.01 mm² threshold — tight enough to catch real overlaps
 }
 
 // ─────────────────────────────────────────────

@@ -2252,7 +2252,6 @@ function goExport(){
 function r3(n){ return Math.round(n*1000)/1000; }
 
 function genDxf(sheet, sw, sh){
-  // Collect all unique layers from placements
   const layerSet = new Set(['SHEET_BORDER','CUT','18','LABELS']);
   for(const p of sheet.placements){
     for(const pl of (p.polylines||[])) if(pl.layer) layerSet.add(pl.layer);
@@ -2265,7 +2264,11 @@ function genDxf(sheet, sw, sh){
 
   let ent='';
 
-  // Helper: rotate a point around centre by angle (degrees)
+  // DXF Y-axis is UP, but server placements use Y-DOWN (screen coords)
+  // Flip Y: dxfY = sh - (placementY + partH) + partLocalY
+  // For a point at local (vx,vy) in a part placed at (ox,oy):
+  //   dxfY = sh - oy - vy   (flips so 0,0 is bottom-left)
+
   function rotPt(x, y, cx, cy, deg){
     if(!deg) return {x,y};
     const rad=deg*Math.PI/180;
@@ -2279,23 +2282,26 @@ function genDxf(sheet, sw, sh){
   for(const p of sheet.placements){
     const ox=p.x, oy=p.y;
     const rot=p.rotation||0;
-    // Rotate around part centre
     const pcx=p.w/2, pcy=p.h/2;
 
-    // Helper: transform a vertex — rotate then translate
+    // Transform: rotate around part centre, then translate and flip Y
     const tv=(vx,vy)=>{
       const r=rotPt(vx,vy,pcx,pcy,rot);
-      return {x:r3(ox+r.x), y:r3(oy+r.y)};
+      return {
+        x: r3(ox + r.x),
+        y: r3(sh - oy - r.y)  // flip Y axis
+      };
     };
 
-    // ── Try to write the real CUT outline with bulge values preserved ──
+    // CUT outline
     const cutPoly = (p.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT');
     if(cutPoly && cutPoly.verts.length>=2){
       ent += `0\nLWPOLYLINE\n8\nCUT\n62\n1\n6\nCONTINUOUS\n90\n${cutPoly.verts.length}\n70\n1\n`;
       for(const v of cutPoly.verts){
         const t=tv(v.x,v.y);
-        // Bulge sign flips when mirrored but not for pure rotation
-        ent += `10\n${t.x}\n20\n${t.y}\n42\n${r3(v.bulge||0)}\n`;
+        // When Y is flipped, bulge sign must flip too (arc direction reverses)
+        const bulge = rot ? r3(v.bulge||0) : r3(-(v.bulge||0));
+        ent += `10\n${t.x}\n20\n${t.y}\n42\n${bulge}\n`;
       }
     } else {
       ent += `0\nLWPOLYLINE\n8\nCUT\n62\n1\n6\nCONTINUOUS\n90\n4\n70\n1\n`;
@@ -2305,18 +2311,18 @@ function genDxf(sheet, sw, sh){
       });
     }
 
-    // ── Write any other non-CUT, non-hole polylines ──
+    // Other polylines
     for(const pl of (p.polylines||[])){
       if(pl.layer?.toUpperCase()==='CUT') continue;
       if(pl.verts.length===2 && Math.abs(Math.abs(pl.verts[0].bulge||0)-1)<0.01) continue;
       ent += `0\nLWPOLYLINE\n8\n${pl.layer||'CUT'}\n62\n7\n6\nCONTINUOUS\n90\n${pl.verts.length}\n70\n${pl.closed?1:0}\n`;
       for(const v of pl.verts){
         const t=tv(v.x,v.y);
-        ent += `10\n${t.x}\n20\n${t.y}\n42\n${r3(v.bulge||0)}\n`;
+        ent += `10\n${t.x}\n20\n${t.y}\n42\n${r3(-(v.bulge||0))}\n`;
       }
     }
 
-    // ── Holes ──
+    // Holes — circles encoded as 2-vertex bulge polylines
     for(const c of (p.circles||[])){
       const tc=tv(c.cx,c.cy);
       const holeLayer = c.layer || '18';
@@ -2325,12 +2331,12 @@ function genDxf(sheet, sw, sh){
       ent += `10\n${r3(tc.x+c.r)}\n20\n${r3(tc.y)}\n42\n1.0\n`;
     }
 
-    // ── Part label ──
-    const tl=tv(2, p.h-8);
-    ent += `0\nTEXT\n8\nLABELS\n62\n7\n10\n${tl.x}\n20\n${tl.y}\n30\n0.0\n40\n5.0\n1\n${p.partName}  ${p.profile||''}  Qty:1\n`;
+    // Label
+    const tl=tv(2, 8);
+    ent += `0\nTEXT\n8\nLABELS\n62\n7\n10\n${tl.x}\n20\n${tl.y}\n30\n0.0\n40\n5.0\n1\n${p.partName}  ${p.profile||''}\n`;
   }
 
-  // Sheet border
+  // Sheet border — Y-flipped so it sits at 0,0 to sw,sh in DXF space
   ent += `0\nLWPOLYLINE\n8\nSHEET_BORDER\n62\n7\n90\n4\n70\n1\n`;
   ent += `10\n0\n20\n0\n42\n0.0\n10\n${sw}\n20\n0\n42\n0.0\n10\n${sw}\n20\n${sh}\n42\n0.0\n10\n0\n20\n${sh}\n42\n0.0\n`;
 

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NestFlow — Steel Cutting & Nesting</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- SVGnest true-shape nesting engine -->
 <script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/clipper.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/Jack000/SVGnest@master/util/geometryutil.js"></script>
@@ -203,6 +204,13 @@ tr.row-unmatched:hover td{background:#ffecec!important}
 .group-ctrl-status{font-size:11px;color:var(--text3);margin-left:auto}
 .group-ctrl.active-group{border-color:var(--text2);background:var(--surface2)}
 .spinner{width:28px;height:28px;border:2px solid var(--border2);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite}
+.nest-progress-wrap{padding:20px;max-width:600px}
+.progress-groups{display:flex;flex-direction:column;gap:4px}
+.progress-group{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);font-size:13px;transition:background .3s}
+.pg-num{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);width:16px;text-align:right;flex-shrink:0}
+.pg-name{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;flex:1}
+.pg-pcs{font-size:11px;color:var(--text3);white-space:nowrap}
+.pg-status{font-size:11px;color:var(--text3);white-space:nowrap;min-width:120px;text-align:right}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── Export screen ── */
@@ -320,9 +328,6 @@ tr.row-unmatched:hover td{background:#ffecec!important}
     </div>
     <button class="icon-btn" title="Job history" onclick="showJobHistory()" style="margin-left:8px;display:flex;align-items:center;gap:5px;font-size:12px;color:#ccc">
       📁 History
-    </button>
-    <button class="icon-btn" title="Server settings" onclick="showServerSettings()" style="display:flex;align-items:center;gap:5px;font-size:12px;color:#ccc">
-      ⚙ Server
     </button>
   </div>
 
@@ -449,7 +454,7 @@ tr.row-unmatched:hover td{background:#ffecec!important}
         <div>
           <p class="slabel">Nested DXF files</p>
           <div id="export-files" class="card" style="margin-bottom:10px"></div>
-          <button class="btn btn-primary" style="width:100%" onclick="downloadAll()">↓ Download all DXF files</button>
+          <button class="btn btn-primary" style="width:100%;margin-top:10px" onclick="downloadAll()">↓ Download all as ZIP</button>
         </div>
         <div>
           <p class="slabel">Job summary</p>
@@ -498,7 +503,6 @@ tr.row-unmatched:hover td{background:#ffecec!important}
       <div id="server-test-result" style="font-size:13px;margin-bottom:16px;min-height:20px"></div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <button class="btn btn-sm" onclick="setQuickUrl('https://nestflow-server-production.up.railway.app')">Use Railway (nestflow-server-production…)</button>
-        <button class="btn btn-sm" onclick="setQuickUrl('http://localhost:3000')">Use local server (localhost:3000)</button>
       </div>
     </div>
     <div class="modal-footer">
@@ -935,14 +939,28 @@ function autoMatch(parts, files){
   });
 }
 
+function deletePart(id){
+  if(!confirm('Remove this part from the job?')) return;
+  state.parts = state.parts.filter(p=>p.id!==id);
+  renderMatchScreen();
+  updateMatchBar();
+}
+
 function renderMatchScreen(){
-  const parts = state.parts;
-  const matched = parts.filter(p=>p.matchStatus==='matched').length;
-  const review  = parts.filter(p=>p.matchStatus==='review').length;
-  const unmatched = parts.filter(p=>p.matchStatus==='unmatched').length;
+  const allParts = state.parts;
+  // Sort: unmatched first, then review, then matched
+  const parts = [
+    ...allParts.filter(p=>p.matchStatus==='unmatched'),
+    ...allParts.filter(p=>p.matchStatus==='review'),
+    ...allParts.filter(p=>p.matchStatus==='matched'),
+  ];
+
+  const matched   = allParts.filter(p=>p.matchStatus==='matched').length;
+  const review    = allParts.filter(p=>p.matchStatus==='review').length;
+  const unmatched = allParts.filter(p=>p.matchStatus==='unmatched').length;
 
   document.getElementById('match-stats').innerHTML = `
-    <div class="stat"><div class="stat-lbl">Total parts</div><div class="stat-val">${parts.length}</div></div>
+    <div class="stat"><div class="stat-lbl">Total parts</div><div class="stat-val">${allParts.length}</div></div>
     <div class="stat"><div class="stat-lbl">Matched</div><div class="stat-val g">${matched}</div></div>
     <div class="stat"><div class="stat-lbl">Needs review</div><div class="stat-val a">${review}</div></div>
     <div class="stat"><div class="stat-lbl">Unmatched</div><div class="stat-val ${unmatched>0?'r':'g'}">${unmatched}</div></div>
@@ -982,7 +1000,10 @@ function renderMatchScreen(){
     const actionCell = p.matchStatus==='review'
       ? `<button class="btn btn-sm" onclick="confirmPart('${p.id}')">Confirm</button>`
       : p.matchStatus==='unmatched'
-      ? `<button class="btn btn-sm" onclick="manualBrowse('${p.id}')">Browse…</button>`
+      ? `<div style="display:flex;gap:4px">
+           <button class="btn btn-sm" onclick="manualBrowse('${p.id}')">Browse…</button>
+           <button class="btn btn-sm" style="color:var(--red);border-color:var(--red-bg)" onclick="deletePart('${p.id}')">✕ Delete</button>
+         </div>`
       : '';
 
     return `<tr class="row-${p.matchStatus}" id="row-${p.id}">
@@ -1248,7 +1269,42 @@ function dxfToSvg(geom, part){
 
 async function goNest(){
   goTo(2);
-  await runNesting();
+  renderNestGroupsOnly();
+}
+
+function renderNestGroupsOnly(){
+  const groups = groupByMaterial(state.parts);
+  const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
+
+  document.getElementById('group-controls').innerHTML = groups.map((g,i)=>{
+    const totalPcs = g.parts.reduce((a,p)=>a+p.quantity,0);
+    const result = state.nestResults[i];
+    const sheetInfo = result
+      ? `✓ ${result.sheets.length} sheet${result.sheets.length!==1?'s':''} · ${Math.round(result.sheets.reduce((a,s)=>a+s.utilisation,0)/(result.sheets.length||1))}%`
+      : 'not nested yet';
+    const statusColor = result ? 'var(--green)' : 'var(--text3)';
+    const usedIdx = result ? SHEET_SIZES.findIndex(s=>s.label===result.sheetSize?.label) : defaultSizeIdx;
+    return `<div class="group-ctrl${i===state.activeGroup&&result?' active-group':''}" id="gc-${i}">
+      <span class="group-ctrl-label">${g.material} ${g.thickness} <span style="color:var(--text3);font-weight:400">(${totalPcs} pcs)</span></span>
+      <select class="sel" id="sheet-sel-${i}" style="font-size:12px;padding:4px 8px">
+        ${SHEET_SIZES.map((s,j)=>`<option value="${j}"${j===(usedIdx>=0?usedIdx:defaultSizeIdx)?' selected':''}>${s.label}</option>`).join('')}
+      </select>
+      <button class="btn btn-sm" onclick="runNesting(${i})">↺ ${result?'Re-nest':'Nest this'}</button>
+      <span style="margin-left:auto;font-size:11px;color:${statusColor}">${sheetInfo}</span>
+      ${result?`<button class="btn btn-sm" onclick="toggleGroupPreview(${i})" id="gc-toggle-${i}">
+        <i class="ti ti-chevron-down" id="gc-chevron-${i}" style="font-size:13px;transition:transform .2s"></i>
+      </button>`:''}
+    </div>
+    <div id="gc-preview-${i}" style="display:none"></div>`;
+  }).join('');
+
+  if(!state.nestResults.length){
+    document.getElementById('nest-stats').innerHTML='';
+    document.getElementById('nest-body').innerHTML='';
+    document.getElementById('nest-legend').innerHTML='';
+    document.getElementById('group-tabs').innerHTML='';
+    document.getElementById('nest-summary').textContent='Set sheet sizes then nest individually or all at once';
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1919,22 +1975,41 @@ async function runNesting(onlyGroupIdx=null){
 
   const useDeepnest = deepnestAvailable;
   const useSvgNest  = !useDeepnest && typeof SvgNest !== 'undefined';
-  const engineName  = useDeepnest ? 'Deepnest (local server)' : useSvgNest ? 'SVGnest' : 'Fast shelf packing';
+  const engineName = useDeepnest
+    ? 'NFP nesting (Railway)'
+    : useSvgNest ? 'SVGnest' : 'Fast shelf packing';
 
   const allItems=[];
   for(const p of state.parts) for(let i=0;i<p.quantity;i++) allItems.push(p);
   const {label:timeLabel} = useDeepnest ? {label:'depends on job size'} : calcNestTimeout(allItems);
 
-  body.innerHTML = `<div class="spinner-wrap"><div class="spinner"></div>
-    <p>Nesting with <strong>${engineName}</strong>…</p>
-    <p id="nest-timer-label" class="muted-sm" style="margin-top:6px">
-      ${useDeepnest ? 'Running Deepnest — large jobs handled efficiently' : `Optimising for up to ${timeLabel}`}
-    </p>
-    <p id="nest-countdown" class="muted-sm" style="margin-top:2px;font-family:'IBM Plex Mono',monospace;font-size:12px"></p>
-    <div id="nest-progress" style="width:220px;height:4px;background:var(--border);border-radius:2px;margin-top:10px;overflow:hidden">
-      <div id="nest-progress-bar" style="height:100%;background:var(--text);width:0%;transition:width .3s"></div>
-    </div>
-  </div>`;
+  const groups = groupByMaterial(state.parts);
+
+  // Build group tracker rows
+  const groupRows = groups.map((g,i) => {
+    const totalPcs = g.parts.reduce((a,p)=>a+p.quantity,0);
+    return `<div class="progress-group" id="pg-${i}">
+      <span class="pg-num">${i+1}</span>
+      <span class="pg-name">${g.material} ${g.thickness}</span>
+      <span class="pg-pcs">${totalPcs} pcs</span>
+      <span class="pg-status" id="pg-status-${i}">waiting</span>
+    </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="nest-progress-wrap">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <div class="spinner"></div>
+        <div>
+          <p style="font-weight:500">Nesting with <strong>${engineName}</strong></p>
+          <p id="nest-timer-label" class="muted-sm" style="margin-top:3px">Starting…</p>
+        </div>
+      </div>
+      <div style="width:100%;height:4px;background:var(--border);border-radius:2px;margin-bottom:16px;overflow:hidden">
+        <div id="nest-progress-bar" style="height:100%;background:var(--text);width:0%;transition:width .5s"></div>
+      </div>
+      <div class="progress-groups">${groupRows}</div>
+    </div>`;
 
   // Read DXF geometry
   const geomCache={};
@@ -1957,6 +2032,14 @@ async function runNesting(onlyGroupIdx=null){
   for(const g of groups){
     const gi=groupIdx;
     groupIdx++;
+
+    // Update progress tracker
+    const pgStatus = document.getElementById(`pg-status-${gi}`);
+    const pgRow = document.getElementById(`pg-${gi}`);
+    if(pgStatus){ pgStatus.textContent = 'nesting…'; pgStatus.style.color='var(--amber)'; }
+    if(pgRow) pgRow.style.background='var(--amber-bg)';
+    const bar=document.getElementById('nest-progress-bar');
+    if(bar) bar.style.width=Math.round((gi/groups.length)*100)+'%';
 
     // Use per-group sheet size if set, otherwise use default
     const selEl=document.getElementById('sheet-sel-'+gi);
@@ -2000,6 +2083,16 @@ async function runNesting(onlyGroupIdx=null){
     }
 
     nestResults.push({...g, sheetSize:sheet, sheets, totalParts:items.length});
+
+    // Mark group done in progress tracker
+    const pgStatusDone = document.getElementById(`pg-status-${gi}`);
+    const pgRowDone = document.getElementById(`pg-${gi}`);
+    if(pgStatusDone){
+      const util = Math.round(sheets.reduce((a,s)=>a+s.utilisation,0)/(sheets.length||1));
+      pgStatusDone.textContent = `✓ ${sheets.length} sheet${sheets.length!==1?'s':''} · ${util}%`;
+      pgStatusDone.style.color='var(--green)';
+    }
+    if(pgRowDone) pgRowDone.style.background='var(--green-bg)';
   }
 
   state.nestResults=nestResults;
@@ -2069,49 +2162,73 @@ async function nestSingleGroup(groupIdx){
   renderNestScreen();
 }
 
+function toggleGroupPreview(i){
+  const preview = document.getElementById(`gc-preview-${i}`);
+  const chevron = document.getElementById(`gc-chevron-${i}`);
+  if(!preview) return;
+  const isOpen = preview.style.display !== 'none';
+  preview.style.display = isOpen ? 'none' : 'block';
+  if(chevron) chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
+  if(!isOpen) renderInlineSheets(i, preview);
+}
+
+function renderInlineSheets(groupIdx, container){
+  const g = state.nestResults[groupIdx];
+  if(!g) return;
+  const {w:SW, h:SH} = g.sheetSize;
+  const PW=160, PH=Math.round(PW*(SH/SW));
+  const sx=PW/SW, sy=PH/SH;
+  const MAX_SHOW = 6;
+  const shown = g.sheets.slice(0, MAX_SHOW);
+  const extra = g.sheets.length - MAX_SHOW;
+
+  container.innerHTML = `<div style="background:var(--surface2);border-top:0.5px solid var(--border);padding:12px;display:flex;gap:10px;overflow-x:auto;align-items:flex-start">
+    ${shown.map(sheet=>`
+      <div style="flex-shrink:0">
+        <div style="position:relative;width:${PW}px;height:${PH}px;background:var(--surface);border:0.5px solid var(--border2);border-radius:4px;overflow:hidden">
+          ${sheet.placements.map(p=>{
+            const px=Math.round(p.x*sx), py=Math.round(p.y*sy);
+            const pw=Math.max(4,Math.round(p.w*sx)), ph=Math.max(4,Math.round(p.h*sy));
+            const holes=(p.circles||[]).map(c=>{
+              const cr=Math.max(1,Math.round(c.r*sx));
+              return `<div style="position:absolute;left:${Math.round(c.cx*sx)-cr}px;top:${Math.round(c.cy*sy)-cr}px;width:${cr*2}px;height:${cr*2}px;border-radius:50%;background:var(--surface2);border:1px solid rgba(0,0,0,.2)"></div>`;
+            }).join('');
+            return `<div style="position:absolute;left:${px}px;top:${py}px;width:${pw}px;height:${ph}px;background:${state.partColorMap[p.partName]||'#ccc'};border:1px solid rgba(0,0,0,.1);border-radius:2px">${holes}</div>`;
+          }).join('')}
+          <div style="position:absolute;bottom:4px;right:5px;font-size:10px;font-weight:500;color:var(--green);font-family:'IBM Plex Mono',monospace;background:rgba(255,255,255,.9);padding:1px 4px;border-radius:3px">${sheet.utilisation}%</div>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;text-align:center">Sheet ${sheet.index} · ${sheet.placements.length} parts</div>
+      </div>`).join('')}
+    ${extra > 0 ? `<div style="display:flex;align-items:center;justify-content:center;width:60px;color:var(--text3);font-size:11px;flex-shrink:0">+${extra} more</div>` : ''}
+  </div>`;
+}
+
 function renderNestScreen(){
   const results = state.nestResults;
-  const groups  = groupByMaterial(state.parts);
   const totalSheets = results.reduce((a,g)=>a+g.sheets.length,0);
   const totalParts  = results.reduce((a,g)=>a+g.totalParts,0);
   const avgUtil = results.length
     ? Math.round(results.reduce((a,g)=>a+(g.sheets.reduce((s,sh)=>s+sh.utilisation,0)/(g.sheets.length||1)),0)/results.length)
     : 0;
 
-  // ── Per-group control rows (sheet size selector + individual nest button) ──
-  const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
-  document.getElementById('group-controls').innerHTML = groups.map((g,i)=>{
-    const result = results[i];
-    const currentSizeIdx = result ? SHEET_SIZES.findIndex(s=>s.label===result.sheetSize?.label) : defaultSizeIdx;
-    const usedIdx = currentSizeIdx>=0 ? currentSizeIdx : defaultSizeIdx;
-    const sheetInfo = result ? `${result.sheets.length} sheet${result.sheets.length!==1?'s':''} · ${Math.round(result.sheets.reduce((a,s)=>a+s.utilisation,0)/(result.sheets.length||1))}% util` : 'Not nested yet';
-    return `<div class="group-ctrl${i===state.activeGroup?' active-group':''}">
-      <span class="group-ctrl-label">${g.material} ${g.thickness} <span style="color:var(--text3);font-weight:400">(${g.parts.reduce((a,p)=>a+p.quantity,0)} pcs)</span></span>
-      <select class="sel" id="sheet-sel-${i}" style="font-size:12px;padding:4px 8px">
-        ${SHEET_SIZES.map((s,j)=>`<option value="${j}"${j===usedIdx?' selected':''}>${s.label}</option>`).join('')}
-      </select>
-      <button class="btn btn-sm" onclick="runNesting(${i})">↺ Nest this</button>
-      <span class="group-ctrl-status">${sheetInfo}</span>
-      ${result?`<button class="btn btn-sm" onclick="setGroup(${i})" style="margin-left:4px">View →</button>`:''}
-    </div>`;
-  }).join('');
+  // Re-render group controls with updated status
+  renderNestGroupsOnly();
 
-  document.getElementById('nest-stats').innerHTML=`
-    <div class="stat"><div class="stat-lbl">Sheets used</div><div class="stat-val">${totalSheets}</div></div>
-    <div class="stat"><div class="stat-lbl">Avg utilisation</div><div class="stat-val ${avgUtil>=80?'g':avgUtil>=60?'a':'r'}">${avgUtil}%</div></div>
-    <div class="stat"><div class="stat-lbl">Parts placed</div><div class="stat-val g">${totalParts}/${totalParts}</div></div>
-    <div class="stat"><div class="stat-lbl">Est. scrap</div><div class="stat-val a">${100-avgUtil}%</div></div>
-  `;
+  // Update stats
+  if(results.length){
+    document.getElementById('nest-stats').innerHTML=`
+      <div class="stat"><div class="stat-lbl">Sheets used</div><div class="stat-val">${totalSheets}</div></div>
+      <div class="stat"><div class="stat-lbl">Avg utilisation</div><div class="stat-val ${avgUtil>=80?'g':avgUtil>=60?'a':'r'}">${avgUtil}%</div></div>
+      <div class="stat"><div class="stat-lbl">Parts placed</div><div class="stat-val g">${totalParts}/${totalParts}</div></div>
+      <div class="stat"><div class="stat-lbl">Est. scrap</div><div class="stat-val a">${100-avgUtil}%</div></div>
+    `;
+    document.getElementById('nest-summary').textContent = `${totalSheets} sheets · ${avgUtil}% avg utilisation`;
+  }
 
-  document.getElementById('group-tabs').innerHTML = results.map((g,i)=>
-    `<button class="gtab${i===state.activeGroup?' active':''}" onclick="setGroup(${i})">
-      ${g.material} ${g.thickness}<span class="gtab-ct">${g.sheets.length} sheet${g.sheets.length!==1?'s':''}</span>
-    </button>`
-  ).join('');
-
-  renderSheets();
-  renderLegend();
-  document.getElementById('nest-summary').textContent = `${totalSheets} sheets · ${avgUtil}% avg utilisation`;
+  // Clear old tab-based UI
+  document.getElementById('group-tabs').innerHTML='';
+  document.getElementById('nest-body').innerHTML='';
+  document.getElementById('nest-legend').innerHTML='';
 }
 
 function setGroup(i){ state.activeGroup=i; renderNestScreen(); }
@@ -2264,12 +2381,77 @@ function downloadDxf(groupIdx, sheetIdx){
   const fname = `${job}_${g.material.replace(/\s/g,'-')}-${g.thickness}_sheet${sheet.index}.dxf`;
   const content = genDxf(sheet, g.sheetSize.w, g.sheetSize.h);
   triggerDownload(fname, content, 'application/dxf');
-  document.getElementById(`dl-btn-${groupIdx}-${sheetIdx}`).className='btn btn-sm btn-saved';
-  document.getElementById(`dl-btn-${groupIdx}-${sheetIdx}`).textContent='✓ Saved';
+  const btn = document.getElementById(`dl-btn-${groupIdx}-${sheetIdx}`);
+  if(btn){ btn.className='btn btn-sm btn-saved'; btn.textContent='✓ Saved'; }
 }
 
-function downloadAll(){
-  state.nestResults.forEach((g,gi)=>g.sheets.forEach((_,si)=>downloadDxf(gi,si)));
+async function downloadAll(){
+  const job = document.getElementById('job-name').value || 'JOB';
+
+  if(typeof JSZip === 'undefined'){
+    // Fallback — individual downloads
+    state.nestResults.forEach((g,gi)=>g.sheets.forEach((_,si)=>downloadDxf(gi,si)));
+    return;
+  }
+
+  const zip = new JSZip();
+  const folder = zip.folder(job);
+
+  // Add all DXF files
+  state.nestResults.forEach(g=>{
+    g.sheets.forEach(sheet=>{
+      const fname = `${job}_${g.material.replace(/\s/g,'-')}-${g.thickness}_sheet${sheet.index}.dxf`;
+      const content = genDxf(sheet, g.sheetSize.w, g.sheetSize.h);
+      folder.file(fname, content);
+    });
+  });
+
+  // Add CSV report
+  const csvLines = [
+    `NestFlow Job Report — ${job}`,
+    `Generated: ${new Date().toLocaleString()}`,
+    '',
+    'PART LIST','Part Name,Material,Thickness,Quantity',
+    ...state.parts.map(p=>`${p.partName},${p.material},${p.thickness},${p.quantity}`),
+    '','MATERIAL USAGE','Material,Thickness,Sheets,Sheet size',
+    ...state.nestResults.map(g=>`${g.material},${g.thickness},${g.sheets.length},${g.sheetSize?.label||''}`),
+    ``,`Total sheets: ${state.nestResults.reduce((a,g)=>a+g.sheets.length,0)}`,
+    `Total pieces: ${state.parts.reduce((a,p)=>a+p.quantity,0)}`,
+  ];
+  folder.file(`${job}_report.csv`, csvLines.join('\n'));
+
+  // Generate and download ZIP
+  const blob = await zip.generateAsync({type:'blob', compression:'DEFLATE'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=`${job}.zip`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+
+  // Save ZIP reference to history
+  saveZipToHistory(job, blob);
+
+  // Update button states
+  document.querySelectorAll('[id^="dl-btn-"]').forEach(btn=>{
+    btn.className='btn btn-sm btn-saved'; btn.textContent='✓ Saved';
+  });
+}
+
+// Store zip blob URL in history record
+function saveZipToHistory(jobName, blob){
+  const history = loadHistory();
+  const record = history.find(j=>j.jobName===jobName);
+  if(!record) return;
+  // Store as base64 in localStorage (small jobs only — large jobs skip gracefully)
+  try{
+    const reader = new FileReader();
+    reader.onload = e => {
+      const b64 = e.target.result;
+      record.zipData = b64;
+      record.zipSize = Math.round(blob.size/1024)+'KB';
+      saveHistory(history);
+    };
+    reader.readAsDataURL(blob);
+  } catch(e){ console.warn('Could not save ZIP to history:', e); }
 }
 
 function triggerDownload(filename, content, type){
@@ -2404,6 +2586,15 @@ async function saveServerUrl(){
   await checkDeepnestServer();
 }
 
+function downloadHistoryZip(id){
+  const job = loadHistory().find(j=>j.id===id);
+  if(!job?.zipData) return;
+  const a = document.createElement('a');
+  a.href = job.zipData;
+  a.download = `${job.jobName}.zip`;
+  a.click();
+}
+
 // ═══════════════════════════════════════════════════════
 // JOB HISTORY — saves to localStorage
 // ═══════════════════════════════════════════════════════
@@ -2485,6 +2676,7 @@ function showJobHistory(){
         </div>
         <div class="hj-actions">
           <button class="btn btn-sm" onclick="exportJobCSV(${job.id})">↓ Export CSV</button>
+          ${job.zipData ? `<button class="btn btn-sm" onclick="downloadHistoryZip(${job.id})">↓ Download DXF ZIP ${job.zipSize?'('+job.zipSize+')':''}</button>` : ''}
           <button class="btn btn-sm hj-del" onclick="deleteJob(${job.id})">Delete</button>
         </div>
       </div>

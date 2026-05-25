@@ -1869,28 +1869,13 @@ let deepnestChecked = false;
 async function checkDeepnestServer(){
   DEEPNEST_URL = getServerUrl();
   try{
-    const r = await fetch(`${DEEPNEST_URL}/ping`, {method:'GET', signal:AbortSignal.timeout(3000)});
+    const r = await fetch(`${DEEPNEST_URL}/ping`, {method:'GET', signal:AbortSignal.timeout(5000)});
     deepnestAvailable = r.ok;
     if(deepnestAvailable){
-      const data = await r.json().catch(()=>({}));
-      updateServerStatus(DEEPNEST_URL, data.engine||'connected');
+      updateServerStatus(DEEPNEST_URL, 'connected');
       return;
     }
   } catch(e){ deepnestAvailable = false; }
-
-  // Try localhost fallback if Railway failed
-  if(DEEPNEST_URL !== LOCALHOST_URL){
-    try{
-      const r2 = await fetch(`${LOCALHOST_URL}/ping`, {method:'GET', signal:AbortSignal.timeout(1500)});
-      if(r2.ok){
-        deepnestAvailable = true;
-        DEEPNEST_URL = LOCALHOST_URL;
-        updateServerStatus(LOCALHOST_URL, 'local');
-        return;
-      }
-    } catch(e){}
-  }
-
   deepnestAvailable = false;
   deepnestChecked = true;
   updateServerStatus(null, null);
@@ -1901,10 +1886,11 @@ function updateServerStatus(url, engine){
   const el = document.getElementById('server-status');
   if(!el) return;
   if(deepnestAvailable && url){
-    const label = url.includes('railway') ? 'Railway cloud' : 'Local server';
-    el.innerHTML = `<span style="color:var(--green)">● ${label} connected</span>`;
+    el.innerHTML = `<span style="color:var(--green)">● Railway connected</span>`;
   } else {
-    el.innerHTML = `<span style="color:var(--amber)">● No server — using browser nesting</span>`;
+    el.innerHTML = `<span style="color:var(--amber)">● Connecting to Railway…</span>`;
+    // Retry once after 3 seconds
+    setTimeout(()=>checkDeepnestServer(), 3000);
   }
 }
 
@@ -1962,19 +1948,13 @@ async function runNesting(onlyGroupIdx=null){
 
   const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
   const body = document.getElementById('nest-body');
+  // Don't re-check server on every nest run — checked on page load
 
-  // Check server availability fresh each time
-  await checkDeepnestServer();
-
-  const useDeepnest = deepnestAvailable;
-  const useSvgNest  = !useDeepnest && typeof SvgNest !== 'undefined';
-  const engineName = useDeepnest
-    ? 'NFP nesting (Railway)'
-    : useSvgNest ? 'SVGnest' : 'Fast shelf packing';
+  const useDeepnest = true; // Always use Railway
+  const engineName = 'NFP nesting (Railway)';
 
   const allItems=[];
   for(const p of state.parts) for(let i=0;i<p.quantity;i++) allItems.push(p);
-  const {label:timeLabel} = useDeepnest ? {label:'depends on job size'} : calcNestTimeout(allItems);
 
   const groups = groupByMaterial(state.parts);
 
@@ -2058,20 +2038,13 @@ async function runNesting(onlyGroupIdx=null){
 
     let sheets;
     try{
-      if(useDeepnest){
-        sheets = await runDeepnest(items, sheet.w, sheet.h, (pct)=>{
-          const bar=document.getElementById('nest-progress-bar');
-          if(bar) bar.style.width=pct+'%';
-        });
-      } else {
-        sheets = await runSvgNest(items, sheet.w, sheet.h, (pct)=>{
-          const bar=document.getElementById('nest-progress-bar');
-          if(bar) bar.style.width=pct+'%';
-        });
-      }
+      sheets = await runDeepnest(items, sheet.w, sheet.h, (pct)=>{
+        const bar=document.getElementById('nest-progress-bar');
+        if(bar) bar.style.width=pct+'%';
+      });
     } catch(e){
-      console.warn('Nesting error, using fallback:', e);
-      sheets = packShelfFallback(items, sheet.w, sheet.h);
+      console.error('Nesting error:', e);
+      throw new Error(`Nesting failed for ${g.material} ${g.thickness}: ${e.message}`);
     }
 
     nestResults.push({...g, sheetSize:sheet, sheets, totalParts:items.length});
@@ -2142,10 +2115,10 @@ async function nestSingleGroup(groupIdx){
   const useDeepnest=deepnestAvailable;
   let sheets;
   try{
-    if(useDeepnest) sheets=await runDeepnest(items,sheet.w,sheet.h,()=>{});
-    else sheets=await runSvgNest(items,sheet.w,sheet.h,()=>{});
-  }catch(e){
-    sheets=packShelfFallback(items,sheet.w,sheet.h);
+    sheets = await runDeepnest(items, sheet.w, sheet.h, ()=>{});
+  } catch(e){
+    console.error('Nesting error:', e);
+    throw e;
   }
 
   // Update just this group's result
@@ -2727,6 +2700,11 @@ document.addEventListener('keydown',e=>{
     closeModal();
     closeHistory();
   }
+});
+
+// Check Railway server once on page load
+document.addEventListener('DOMContentLoaded', ()=>{
+  checkDeepnestServer();
 });
 </script>
 </body>

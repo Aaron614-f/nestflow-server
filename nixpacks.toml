@@ -1,6 +1,5 @@
 # nixpacks.toml
-# Tells Railway's build system which system packages to install
-# before pip runs — Packaide's C++ engine needs all three.
+# Tells Railway to use Node.js 20
 
 [phases.setup]
-nixPkgs = ["cmake", "boost", "gcc"]
+nixPkgs = ["nodejs_20"]

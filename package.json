@@ -1,0 +1,15 @@
+{
+  "name": "nestflow-server",
+  "version": "3.0.0",
+  "description": "NestFlow nesting server — NFP two-pass nesting in Node.js",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "clipper-lib": "^6.4.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

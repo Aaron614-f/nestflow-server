@@ -1929,7 +1929,12 @@ async function runDeepnest(items, sheetW, sheetH, onProgress){
     index: s.index||si+1,
     placements: s.placements.map(pl=>({
       ...items[pl.idx],
-      x:pl.x, y:pl.y, rotation:pl.rotation||0,
+      x: pl.x,
+      y: pl.y,
+      rotation: pl.rotation||0,
+      // Use server-returned placed dimensions (accounts for rotation)
+      w: pl.placedW || items[pl.idx]?.w || 0,
+      h: pl.placedH || items[pl.idx]?.h || 0,
     })),
     utilisation: calcUtil(s.placements.map(pl=>items[pl.idx]), sheetW, sheetH),
   }));
@@ -2282,14 +2287,20 @@ function genDxf(sheet, sw, sh){
   for(const p of sheet.placements){
     const ox=p.x, oy=p.y;
     const rot=p.rotation||0;
-    const pcx=p.w/2, pcy=p.h/2;
+    // Use placed dimensions (may differ from original if rotated)
+    const pw=p.w, ph=p.h;
+    const pcx=pw/2, pcy=ph/2;
 
-    // Transform: rotate around part centre, then translate and flip Y
+    // Transform: rotate around placed part centre, translate, flip Y
+    // Server: origin top-left, Y increases DOWN
+    // DXF:   origin bottom-left, Y increases UP
+    // Formula: dxfX = ox + rotX
+    //          dxfY = (sh - oy - ph) + (ph - rotY) = sh - oy - rotY
     const tv=(vx,vy)=>{
       const r=rotPt(vx,vy,pcx,pcy,rot);
       return {
         x: r3(ox + r.x),
-        y: r3(sh - oy - r.y)  // flip Y axis
+        y: r3(sh - oy - ph + (ph - r.y))  // correct Y flip
       };
     };
 

@@ -174,7 +174,10 @@ function nestParts(polygons, sheet, spacing, rotations) {
         idx: p.idx,
         x: Math.round(p.x * 1000) / 1000,
         y: Math.round(p.y * 1000) / 1000,
-        rotation: p.rotation
+        rotation: p.rotation,
+        // Return actual placed dimensions (may be swapped if rotated 90/270)
+        placedW: Math.round(p.w * 1000) / 1000,
+        placedH: Math.round(p.h * 1000) / 1000,
       }))
     });
 

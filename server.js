@@ -1,17 +1,19 @@
 /**
- * NestFlow — Nesting Server v3.0
- * True NFP-based nesting entirely in Node.js using clipper-lib.
+ * NestFlow — Nesting Server v3.1
+ * NFP two-pass nesting with streaming progress events.
  *
- * Key upgrade from v2: replaces grid search with NFP (No-Fit Polygon)
- * placement. For each new part, the NFP defines the exact set of positions
- * where it touches — but does not overlap — each already-placed part.
- * Candidates are only tested at NFP boundary vertices, which is O(n·vertices)
- * instead of O(grid²·n). This is 10-50× faster and packs significantly tighter.
+ * The /nest endpoint streams newline-delimited JSON events as each phase
+ * completes, so the frontend can update in real time:
  *
- * Two-pass strategy:
- *   Pass 1 — rectangular parts, rotations=4  (fast, no arc approximation needed)
- *   Pass 2 — rounded parts fill gaps,  rotations=8  (more angles = better curves)
- *   Pass 3 — overflow rounded parts that didn't fit, nested standalone
+ *   {"type":"start",    "rectCount":31, "roundedCount":12, "totalParts":43}
+ *   {"type":"pass",     "pass":1, "label":"Rectangular parts", "total":31}
+ *   {"type":"placed",   "pass":1, "placed":10, "total":31, "sheet":1}
+ *   {"type":"placed",   "pass":1, "placed":20, "total":31, "sheet":1}
+ *   {"type":"passdone", "pass":1, "sheets":2, "placed":31}
+ *   {"type":"pass",     "pass":2, "label":"Rounded parts (filling gaps)", "total":12}
+ *   {"type":"placed",   "pass":2, "placed":6,  "total":12, "sheet":1}
+ *   {"type":"passdone", "pass":2, "sheets":2,  "placed":12, "overflow":0}
+ *   {"type":"done",     "sheets":[...complete result...]}
  *
  * Usage:  node server.js
  * Stop:   Ctrl+C
@@ -23,7 +25,7 @@ const path = require('path');
 const ClipperLib = require('clipper-lib');
 
 const PORT  = process.env.PORT || 3000;
-const SCALE = 10000000; // clipper integer scale — 1 unit = 0.0000001 mm
+const SCALE = 10000000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP server
@@ -36,25 +38,41 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   if (req.method === 'GET' && req.url === '/ping') {
-    json(res, 200, { ok: true, engine: 'NFP two-pass v3.0', version: '3.0.0' });
+    json(res, 200, { ok: true, engine: 'NFP two-pass v3.1', version: '3.1.0' });
     return;
   }
 
   if (req.method === 'POST' && req.url === '/nest') {
     let body = '';
     req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    req.on('end', () => {
       try {
         const payload = JSON.parse(body);
         const nParts  = payload.parts?.length || 0;
         const { w, h } = payload.sheet || {};
         console.log(`  Nesting ${nParts} parts on ${w}×${h}mm sheet`);
-        const result = runNesting(payload);
-        console.log(`  Done — ${result.sheets?.length || 0} sheet(s)`);
-        json(res, 200, result);
+
+        // Stream newline-delimited JSON events
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson',
+          'Transfer-Encoding': 'chunked',
+          'X-Accel-Buffering': 'no', // disable Railway/nginx buffering
+        });
+
+        const emit = obj => res.write(JSON.stringify(obj) + '\n');
+
+        try {
+          runNestingStreamed(payload, emit);
+        } catch (err) {
+          console.error('  Nesting error:', err.message);
+          emit({ type: 'error', error: err.message });
+        }
+        res.end();
+
       } catch (err) {
-        console.error('  Nesting error:', err.message);
-        json(res, 500, { error: err.message });
+        console.error('  Parse error:', err.message);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
       }
     });
     return;
@@ -78,9 +96,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  +==========================================+');
-  console.log('  |  NestFlow Nesting Server  v3.0          |');
+  console.log('  |  NestFlow Nesting Server  v3.1          |');
   console.log(`  |  Listening on http://localhost:${PORT}      |`);
-  console.log('  |  Engine: NFP two-pass nesting            |');
+  console.log('  |  Engine: NFP two-pass + streaming        |');
   console.log('  +==========================================+');
   console.log('');
   console.log('  Open nestflow.html in Chrome or Edge to start.');
@@ -89,69 +107,74 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main entry point — two-pass strategy
+// Main entry point — streams events as each pass completes
 // ─────────────────────────────────────────────────────────────────────────────
-function runNesting({ sheet, parts, spacing = 2, rotations = 4 }) {
+function runNestingStreamed({ sheet, parts, spacing = 2 }, emit) {
   if (!sheet || !parts || !parts.length) throw new Error('Invalid payload');
 
-  const sw = sheet.w, sh = sheet.h;
-  const pad = spacing;
+  const sw = sheet.w, sh = sheet.h, pad = spacing;
 
-  // Build polygon objects
   const polygons = parts.map(p => ({
     pts: (p.points && p.points.length >= 3) ? p.points : rectPoints(p.w, p.h),
-    w: p.w, h: p.h,
-    idx: p.idx,
+    w: p.w, h: p.h, idx: p.idx,
   }));
 
-  // Split rectangular vs rounded
-  // Rectangular = exactly 4 points (frontend's polylineToPoints flattens arcs to extra verts)
   const rectPolys    = polygons.filter(p => p.pts.length === 4);
   const roundedPolys = polygons.filter(p => p.pts.length !== 4);
 
-  console.log(`  Split: ${rectPolys.length} rectangular, ${roundedPolys.length} rounded`);
+  emit({ type: 'start', rectCount: rectPolys.length, roundedCount: roundedPolys.length, totalParts: polygons.length });
 
-  // ── Pass 1: rectangles, rotations=4 ────────────────────────────────────────
-  const { sheets: pass1Sheets, unplaced: _ } = nestPolygons(
-    rectPolys, sw, sh, pad, 4
+  // ── Pass 1: rectangles ──────────────────────────────────────────────────────
+  emit({ type: 'pass', pass: 1, label: 'Rectangular parts', total: rectPolys.length, rotations: 4 });
+
+  const { sheets: pass1Sheets } = nestPolygons(
+    rectPolys, sw, sh, pad, 4, null,
+    (placed, total, sheetNum) => emit({ type: 'placed', pass: 1, placed, total, sheet: sheetNum })
   );
-  console.log(`  Pass 1: ${pass1Sheets.length} sheet(s)`);
 
-  // ── Pass 2: rounded parts fill gaps, rotations=8 ───────────────────────────
-  // Seed the occupied map from pass 1 placements
+  emit({ type: 'passdone', pass: 1, sheets: pass1Sheets.length, placed: rectPolys.length });
+  console.log(`  Pass 1: ${pass1Sheets.length} sheet(s), ${rectPolys.length} parts`);
+
+  // ── Pass 2: rounded fills gaps ──────────────────────────────────────────────
+  emit({ type: 'pass', pass: 2, label: 'Rounded parts — filling gaps', total: roundedPolys.length, rotations: 8 });
+
   const pass1Occupied = buildOccupiedFromSheets(pass1Sheets, sw, sh, pad);
-
-  const { sheets: pass2Sheets, unplaced: overflow } = nestPolygons(
-    roundedPolys, sw, sh, pad, 8, pass1Occupied
+  const { sheets: pass2Sheets, overflow } = nestPolygons(
+    roundedPolys, sw, sh, pad, 8, pass1Occupied,
+    (placed, total, sheetNum) => emit({ type: 'placed', pass: 2, placed, total, sheet: sheetNum })
   );
+
+  emit({ type: 'passdone', pass: 2, sheets: pass2Sheets.length, placed: roundedPolys.length - overflow.length, overflow: overflow.length });
   console.log(`  Pass 2: ${pass2Sheets.length} sheet(s), ${overflow.length} overflow`);
 
-  // ── Pass 3: overflow rounded parts standalone ───────────────────────────────
+  // ── Pass 3: overflow ────────────────────────────────────────────────────────
   let pass3Sheets = [];
   if (overflow.length) {
-    const result3 = nestPolygons(overflow, sw, sh, pad, 8);
+    emit({ type: 'pass', pass: 3, label: 'Overflow — fresh sheets', total: overflow.length, rotations: 8 });
+
+    const result3 = nestPolygons(
+      overflow, sw, sh, pad, 8, null,
+      (placed, total, sheetNum) => emit({ type: 'placed', pass: 3, placed, total, sheet: sheetNum })
+    );
     pass3Sheets = result3.sheets;
+
+    emit({ type: 'passdone', pass: 3, sheets: pass3Sheets.length, placed: overflow.length, overflow: 0 });
     console.log(`  Pass 3: ${pass3Sheets.length} sheet(s)`);
   }
 
-  // ── Merge all passes ────────────────────────────────────────────────────────
-  return mergeSheets(pass1Sheets, pass2Sheets, pass3Sheets);
+  // ── Final result ────────────────────────────────────────────────────────────
+  const result = mergeSheets(pass1Sheets, pass2Sheets, pass3Sheets);
+  console.log(`  Done — ${result.sheets.length} sheet(s) total`);
+  emit({ type: 'done', ...result });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core NFP nesting engine
+// onProgress(placedSoFar, total, currentSheetNumber) called after each placement
 // ─────────────────────────────────────────────────────────────────────────────
+function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null, onProgress = null) {
+  if (!polygons.length) return { sheets: [], overflow: [], unplaced: [] };
 
-/**
- * Nest a list of polygons onto sheets of size sw×sh.
- * Returns { sheets, unplaced }.
- * If seedOccupied is provided (from a prior pass), parts are placed into
- * those existing sheets first before opening new ones.
- */
-function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null) {
-  if (!polygons.length) return { sheets: [], unplaced: [] };
-
-  // Generate rotation variants — cache per unique polygon shape
   const variants = polygons.map(poly => {
     const angles = [];
     for (let r = 0; r < rotations; r++) {
@@ -163,46 +186,37 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null) {
     return angles;
   });
 
-  // Sort largest area first — greedy placement works better this way
-  const order = polygons.map((_, i) => i).sort((a, b) => {
-    const areaA = polygons[a].w * polygons[a].h;
-    const areaB = polygons[b].w * polygons[b].h;
-    return areaB - areaA;
-  });
+  const order = polygons.map((_, i) => i).sort((a, b) =>
+    (polygons[b].w * polygons[b].h) - (polygons[a].w * polygons[a].h)
+  );
 
   const sheets   = [];
   let remaining  = order.slice();
-
-  // If we have a seed (pass1 occupied map), start with those sheets
+  let totalPlaced = 0;
   let sheetOccupied = seedOccupied ? seedOccupied.map(o => [...o]) : null;
 
   while (remaining.length > 0) {
-    // Start a new sheet if no seed or seed is exhausted
     if (!sheetOccupied || sheetOccupied.length === 0) {
-      sheetOccupied = [[]]; // one new empty sheet
+      sheetOccupied = [[]];
     }
 
-    const sheetIdx     = sheetOccupied.length - 1; // place into last sheet first
-    const occupied     = sheetOccupied[sheetIdx];
+    const occupied     = sheetOccupied[sheetOccupied.length - 1];
     const placements   = [];
     const stillRemaining = [];
+    const sheetNum     = sheets.length + 1;
 
-    // IFP (Inner Fit Polygon) for the sheet — computed per rotation variant
     for (const polyIdx of remaining) {
       let bestPlacement = null;
       let bestScore     = Infinity;
 
       for (const v of variants[polyIdx]) {
-        if (v.w + pad * 2 > sw || v.h + pad * 2 > sh) continue; // won't fit at all
-
-        // Get candidate positions from NFP boundary
+        if (v.w + pad * 2 > sw || v.h + pad * 2 > sh) continue;
         const candidates = getCandidatePositions(v.pts, occupied, sw, sh, pad);
-
         for (const { x, y } of candidates) {
           const placed = v.pts.map(p => ({ x: p.x + x, y: p.y + y }));
           if (!fitsInSheet(placed, sw, sh, pad)) continue;
           if (overlapsOccupied(placed, occupied)) continue;
-          const score = y * sw + x; // gravity: top-left preferred
+          const score = y * sw + x;
           if (score < bestScore) {
             bestScore = score;
             bestPlacement = { polyIdx, x, y, rotation: v.angle, pts: v.pts, w: v.w, h: v.h };
@@ -212,20 +226,16 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null) {
 
       if (bestPlacement) {
         placements.push(bestPlacement);
-        // Add expanded footprint to occupied list
-        const placed = bestPlacement.pts.map(p => ({
-          x: p.x + bestPlacement.x,
-          y: p.y + bestPlacement.y,
-        }));
-        const expanded = expandPoly(placed, pad);
-        occupied.push(...expanded);
+        const placed = bestPlacement.pts.map(p => ({ x: p.x + bestPlacement.x, y: p.y + bestPlacement.y }));
+        occupied.push(...expandPoly(placed, pad));
+        totalPlaced++;
+        if (onProgress) onProgress(totalPlaced, polygons.length, sheetNum);
       } else {
         stillRemaining.push(polyIdx);
       }
     }
 
     if (placements.length === 0) {
-      // Nothing fit on this sheet — force-place first part to avoid infinite loop
       const polyIdx = remaining[0];
       const v = variants[polyIdx][0];
       placements.push({ polyIdx, x: pad, y: pad, rotation: v.angle, pts: v.pts, w: v.w, h: v.h });
@@ -233,178 +243,101 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null) {
     }
 
     sheets.push(placements.map(p => ({
-      idx:      polygons[p.polyIdx].idx,
-      x:        r3(p.x),
-      y:        r3(p.y),
-      rotation: p.rotation,
-      placedW:  r3(p.w),
-      placedH:  r3(p.h),
+      idx: polygons[p.polyIdx].idx, x: r3(p.x), y: r3(p.y),
+      rotation: p.rotation, placedW: r3(p.w), placedH: r3(p.h),
     })));
 
     remaining     = stillRemaining;
-    sheetOccupied = null; // subsequent iterations open fresh sheets
+    sheetOccupied = null;
   }
 
-  return { sheets, unplaced: [] };
+  return { sheets, overflow: [], unplaced: [] };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NFP candidate positions
-//
-// The key insight: valid placements are ALWAYS at positions where the incoming
-// part touches either (a) the sheet wall or (b) an already-placed part.
-// We don't need to scan a grid — we only need to test NFP boundary vertices.
-//
-// For each placed polygon A in `occupied`, we compute the NFP of (A, B) where
-// B is the incoming part. The NFP boundary vertices are exactly the positions
-// where B would touch A without overlapping. We also add the four sheet-wall
-// positions (flush against each edge).
+// NFP candidate positions via Minkowski sum
 // ─────────────────────────────────────────────────────────────────────────────
 function getCandidatePositions(pts, occupied, sw, sh, pad) {
   const bb = bbox(pts);
-  const candidates = [];
-
-  // Always include the four sheet-corner positions
-  candidates.push(
-    { x: pad,          y: pad },
-    { x: sw - bb.w - pad, y: pad },
-    { x: pad,          y: sh - bb.h - pad },
-    { x: sw - bb.w - pad, y: sh - bb.h - pad },
-  );
-
-  // For each placed part, compute NFP and add its vertices as candidates
-  // occupied is a flat list of Clipper paths — group them back into parts
-  // by using the union outline of all occupied as a single blocker polygon
+  const candidates = [
+    { x: pad,              y: pad },
+    { x: sw - bb.w - pad,  y: pad },
+    { x: pad,              y: sh - bb.h - pad },
+    { x: sw - bb.w - pad,  y: sh - bb.h - pad },
+  ];
   if (occupied.length > 0) {
-    const nfpPoints = computeNFPVertices(pts, occupied, sw, sh, pad);
-    candidates.push(...nfpPoints);
+    candidates.push(...computeNFPVertices(pts, occupied, sw, sh, pad));
   }
-
-  // Deduplicate to avoid redundant overlap checks
   return deduplicateCandidates(candidates, 1.0);
 }
 
-/**
- * Compute NFP vertices by Minkowski difference via Clipper.
- *
- * The Minkowski difference of the occupied region and part B gives the
- * "forbidden zone" — positions where B would overlap occupied.
- * The boundary of (sheet IFP minus forbidden zone) contains all valid
- * touching positions. We return its vertices as candidates.
- */
 function computeNFPVertices(pts, occupied, sw, sh, pad) {
-  const bb  = bbox(pts);
-
-  // IFP: the region the part's reference point can reach within the sheet
+  const bb = bbox(pts);
   const ifpPts = [
-    { x: pad,          y: pad },
-    { x: sw - bb.w - pad, y: pad },
-    { x: sw - bb.w - pad, y: sh - bb.h - pad },
-    { x: pad,          y: sh - bb.h - pad },
+    { x: pad,              y: pad },
+    { x: sw - bb.w - pad,  y: pad },
+    { x: sw - bb.w - pad,  y: sh - bb.h - pad },
+    { x: pad,              y: sh - bb.h - pad },
   ];
   if (ifpPts[1].x < ifpPts[0].x || ifpPts[2].y < ifpPts[0].y) return [];
 
-  const ifpClipper = [toClipperPath(ifpPts)];
-
-  // Minkowski sum of occupied with the reflected part polygon
-  // = the set of positions where the part would overlap occupied
-  const reflected   = pts.map(p => ({ x: -p.x, y: -p.y }));
+  const reflected = pts.map(p => ({ x: -p.x, y: -p.y }));
   const minkowskiPaths = [];
-
   for (const occPath of occupied) {
     const ms = minkowskiSum(occPath, toClipperPath(reflected));
     if (ms) minkowskiPaths.push(...ms);
   }
+  if (!minkowskiPaths.length) return ifpPts;
 
-  if (!minkowskiPaths.length) {
-    // No occupied shapes yet — IFP vertices are the only candidates
-    return ifpPts;
-  }
-
-  // Subtract Minkowski sum from IFP to get valid placement region
   const clipper = new ClipperLib.Clipper();
-  clipper.AddPaths(ifpClipper,      ClipperLib.PolyType.ptSubject, true);
-  clipper.AddPaths(minkowskiPaths,  ClipperLib.PolyType.ptClip,    true);
+  clipper.AddPaths([toClipperPath(ifpPts)], ClipperLib.PolyType.ptSubject, true);
+  clipper.AddPaths(minkowskiPaths,          ClipperLib.PolyType.ptClip,    true);
   const solution = new ClipperLib.Paths();
   clipper.Execute(ClipperLib.ClipType.ctDifference, solution,
     ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
 
   if (!solution || !solution.length) return ifpPts;
-
-  // Return all boundary vertices of the valid region
   const result = [];
-  for (const path of solution) {
-    for (const pt of path) {
-      result.push({ x: pt.X / SCALE, y: pt.Y / SCALE });
-    }
+  for (const path of solution) for (const pt of path) {
+    result.push({ x: pt.X / SCALE, y: pt.Y / SCALE });
   }
   return result;
 }
 
-/**
- * Minkowski sum of two Clipper paths using ClipperLib's built-in function.
- */
 function minkowskiSum(pathA, pathB) {
   try {
     const solution = new ClipperLib.Paths();
     ClipperLib.Clipper.MinkowskiSum(pathA, pathB, solution, true);
     return solution.length ? solution : null;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Build occupied map from a completed pass's sheet placements
-// ─────────────────────────────────────────────────────────────────────────────
 function buildOccupiedFromSheets(sheets, sw, sh, pad) {
   return sheets.map(placements => {
     const occupied = [];
     for (const p of placements) {
-      // Reconstruct polygon at its placed position
-      // (placements only store x/y/rotation/placedW/placedH, not the full pts)
-      // Use a rectangle as the footprint — sufficient for collision purposes
       const rectPts = [
-        { x: p.x,           y: p.y },
+        { x: p.x,            y: p.y },
         { x: p.x + p.placedW, y: p.y },
         { x: p.x + p.placedW, y: p.y + p.placedH },
-        { x: p.x,           y: p.y + p.placedH },
+        { x: p.x,            y: p.y + p.placedH },
       ];
-      const expanded = expandPoly(rectPts, pad);
-      occupied.push(...expanded);
+      occupied.push(...expandPoly(rectPts, pad));
     }
     return occupied;
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Merge all three passes into unified response format
-// ─────────────────────────────────────────────────────────────────────────────
 function mergeSheets(pass1, pass2, pass3) {
-  // pass1 and pass2 operate on the same physical sheets
-  // pass3 is overflow — starts after the shared sheets
-
   const maxShared = Math.max(pass1.length, pass2.length);
-  const merged    = [];
-
+  const merged = [];
   for (let i = 0; i < maxShared; i++) {
-    const placements = [
-      ...(pass1[i] || []),
-      ...(pass2[i] || []),
-    ];
-    merged.push(placements);
+    merged.push([...(pass1[i] || []), ...(pass2[i] || [])]);
   }
-
-  // Append pass3 overflow sheets
-  for (const sheet of pass3) {
-    merged.push(sheet);
-  }
-
+  for (const sheet of pass3) merged.push(sheet);
   return {
     sheets: merged.map((placements, i) => ({
-      index:       i + 1,
-      placements,
-      utilisation: 0, // frontend recalculates from placedW/placedH
+      index: i + 1, placements, utilisation: 0,
     })),
   };
 }
@@ -413,88 +346,62 @@ function mergeSheets(pass1, pass2, pass3) {
 // Geometry helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function rectPoints(w, h) {
-  return [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }];
+  return [{ x:0,y:0 },{ x:w,y:0 },{ x:w,y:h },{ x:0,y:h }];
 }
-
 function bbox(pts) {
-  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
-  return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+  const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+  return { minX,minY,maxX,maxY,w:maxX-minX,h:maxY-minY };
 }
-
-/** Shift polygon so its bounding box starts at 0,0 */
 function normalise(pts) {
-  const bb = bbox(pts);
-  return pts.map(p => ({ x: p.x - bb.minX, y: p.y - bb.minY }));
+  const bb=bbox(pts);
+  return pts.map(p=>({ x:p.x-bb.minX, y:p.y-bb.minY }));
 }
-
 function rotatePoly(pts, angleDeg) {
-  if (angleDeg === 0) return pts;
-  const rad = (angleDeg * Math.PI) / 180;
-  const cx  = pts.reduce((a, p) => a + p.x, 0) / pts.length;
-  const cy  = pts.reduce((a, p) => a + p.y, 0) / pts.length;
-  return pts.map(p => {
-    const dx = p.x - cx, dy = p.y - cy;
-    return {
-      x: cx + dx * Math.cos(rad) - dy * Math.sin(rad),
-      y: cy + dx * Math.sin(rad) + dy * Math.cos(rad),
-    };
-  });
+  if (angleDeg===0) return pts;
+  const rad=(angleDeg*Math.PI)/180;
+  const cx=pts.reduce((a,p)=>a+p.x,0)/pts.length;
+  const cy=pts.reduce((a,p)=>a+p.y,0)/pts.length;
+  return pts.map(p=>({
+    x: cx+(p.x-cx)*Math.cos(rad)-(p.y-cy)*Math.sin(rad),
+    y: cy+(p.x-cx)*Math.sin(rad)+(p.y-cy)*Math.cos(rad),
+  }));
 }
-
-function fitsInSheet(pts, w, h, pad) {
-  return pts.every(p =>
-    p.x >= pad - 0.001 && p.y >= pad - 0.001 &&
-    p.x <= w - pad + 0.001 && p.y <= h - pad + 0.001
-  );
+function fitsInSheet(pts,w,h,pad) {
+  return pts.every(p=>p.x>=pad-0.001&&p.y>=pad-0.001&&p.x<=w-pad+0.001&&p.y<=h-pad+0.001);
 }
-
-function deduplicateCandidates(pts, tolerance) {
-  const out = [];
-  for (const p of pts) {
-    if (!out.some(q => Math.abs(q.x - p.x) < tolerance && Math.abs(q.y - p.y) < tolerance)) {
-      out.push(p);
-    }
-  }
+function deduplicateCandidates(pts,tol) {
+  const out=[];
+  for (const p of pts) if (!out.some(q=>Math.abs(q.x-p.x)<tol&&Math.abs(q.y-p.y)<tol)) out.push(p);
   return out;
 }
-
-function r3(n) { return Math.round(n * 1000) / 1000; }
+function r3(n) { return Math.round(n*1000)/1000; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clipper helpers
 // ─────────────────────────────────────────────────────────────────────────────
 function toClipperPath(pts) {
-  return pts.map(p => ({ X: Math.round(p.x * SCALE), Y: Math.round(p.y * SCALE) }));
+  return pts.map(p=>({ X:Math.round(p.x*SCALE), Y:Math.round(p.y*SCALE) }));
 }
-
-function expandPoly(pts, delta) {
-  if (delta <= 0) return [toClipperPath(pts)];
-  const co   = new ClipperLib.ClipperOffset();
-  const path = toClipperPath(pts);
-  co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
-  const solution = new ClipperLib.Paths();
-  co.Execute(solution, delta * SCALE);
+function expandPoly(pts,delta) {
+  if (delta<=0) return [toClipperPath(pts)];
+  const co=new ClipperLib.ClipperOffset();
+  co.AddPath(toClipperPath(pts),ClipperLib.JoinType.jtRound,ClipperLib.EndType.etClosedPolygon);
+  const solution=new ClipperLib.Paths();
+  co.Execute(solution,delta*SCALE);
   return solution;
 }
-
-function overlapsOccupied(candidate, occupied) {
-  if (!occupied || occupied.length === 0) return false;
-  const clipper = new ClipperLib.Clipper();
-  clipper.AddPaths([toClipperPath(candidate)], ClipperLib.PolyType.ptSubject, true);
-  clipper.AddPaths(occupied,                   ClipperLib.PolyType.ptClip,    true);
-  const solution = new ClipperLib.Paths();
-  clipper.Execute(ClipperLib.ClipType.ctIntersection, solution);
-  if (!solution || !solution.length) return false;
-  const area = Math.abs(ClipperLib.Clipper.Area(solution[0])) / (SCALE * SCALE);
-  return area > 0.01;
+function overlapsOccupied(candidate,occupied) {
+  if (!occupied||!occupied.length) return false;
+  const clipper=new ClipperLib.Clipper();
+  clipper.AddPaths([toClipperPath(candidate)],ClipperLib.PolyType.ptSubject,true);
+  clipper.AddPaths(occupied,ClipperLib.PolyType.ptClip,true);
+  const solution=new ClipperLib.Paths();
+  clipper.Execute(ClipperLib.ClipType.ctIntersection,solution);
+  if (!solution||!solution.length) return false;
+  return Math.abs(ClipperLib.Clipper.Area(solution[0]))/(SCALE*SCALE)>0.01;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-function json(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function json(res,status,data) {
+  res.writeHead(status,{'Content-Type':'application/json'});
   res.end(JSON.stringify(data));
 }

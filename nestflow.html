@@ -197,13 +197,34 @@ tr.row-unmatched:hover td{background:#ffecec!important}
 .group-ctrl-status{font-size:11px;color:var(--text3);margin-left:auto}
 .group-ctrl.active-group{border-color:var(--text2);background:var(--surface2)}
 .spinner{width:28px;height:28px;border:2px solid var(--border2);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite}
-.nest-progress-wrap{padding:20px;max-width:600px}
+.nest-progress-wrap{padding:20px;max-width:640px}
 .progress-groups{display:flex;flex-direction:column;gap:4px}
 .progress-group{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);font-size:13px;transition:background .3s}
 .pg-num{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);width:16px;text-align:right;flex-shrink:0}
 .pg-name{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;flex:1}
 .pg-pcs{font-size:11px;color:var(--text3);white-space:nowrap}
 .pg-status{font-size:11px;color:var(--text3);white-space:nowrap;min-width:120px;text-align:right}
+/* Pass rows */
+.pass-block{border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:8px}
+.pass-header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2)}
+.pass-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:500;padding:2px 7px;border-radius:3px;background:var(--border);color:var(--text2);flex-shrink:0}
+.pass-badge.active{background:var(--amber-bg);color:var(--amber)}
+.pass-badge.done{background:var(--green-bg);color:var(--green)}
+.pass-label{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;flex:1}
+.pass-count{font-size:11px;color:var(--text3);white-space:nowrap}
+.pass-bar-wrap{height:3px;background:var(--border);position:relative}
+.pass-bar{height:100%;background:var(--text);width:0%;transition:width .3s}
+.pass-bar.amber{background:var(--amber)}
+.pass-bar.green{background:var(--green)}
+.pass-body{padding:8px 14px 10px;display:flex;flex-direction:column;gap:4px;background:var(--surface)}
+/* Sheet rows inside a pass */
+.sheet-row{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0}
+.sheet-row-num{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);width:52px;flex-shrink:0}
+.sheet-row-bar-wrap{flex:1;height:8px;background:var(--surface2);border-radius:2px;overflow:hidden}
+.sheet-row-bar{height:100%;background:var(--green-bg);border-radius:2px;transition:width .4s}
+.sheet-row-bar.active{background:var(--amber-bg)}
+.sheet-row-pct{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text2);width:32px;text-align:right;flex-shrink:0}
+.sheet-row-parts{font-size:11px;color:var(--text3);white-space:nowrap}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── Export screen ── */
@@ -1895,9 +1916,8 @@ function updateServerStatus(url, engine){
   }
 }
 
-// Send geometry to Deepnest server, get placements back
+// Send geometry to nesting server, receive streaming NDJSON progress events
 async function runDeepnest(items, sheetW, sheetH, onProgress){
-  // Build geometry payload — send polygon points for each item
   const parts = items.map((item, idx)=>{
     const cutPoly=(item.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT')||(item.polylines||[])[0];
     const points = cutPoly
@@ -1906,65 +1926,163 @@ async function runDeepnest(items, sheetW, sheetH, onProgress){
     return { idx, partName:item.partName, w:item.w, h:item.h, points };
   });
 
-  const payload = {
-    sheet: { w:sheetW, h:sheetH },
-    parts,
-    spacing: 2,
-    rotations: 4,
-  };
-
-  // POST geometry, get back placements with x/y/rotation per item
   const resp = await fetch(`${DEEPNEST_URL}/nest`, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload),
-    signal:AbortSignal.timeout(300000), // 5 min max
+    body:JSON.stringify({ sheet:{w:sheetW,h:sheetH}, parts, spacing:2, rotations:4 }),
+    signal:AbortSignal.timeout(300000),
   });
 
-  if(!resp.ok) throw new Error('Deepnest server error: '+resp.status);
+  if(!resp.ok) throw new Error('Server error: '+resp.status);
 
-  const result = await resp.json();
+  // Read streaming NDJSON line by line
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let finalResult = null;
 
-  // result.sheets = [{index, placements:[{idx, x, y, rotation}]}]
-  return result.sheets.map((s,si)=>({
+  while(true){
+    const { done, value } = await reader.read();
+    if(done) break;
+    buf += decoder.decode(value, { stream:true });
+    const lines = buf.split('\n');
+    buf = lines.pop(); // keep incomplete last line
+    for(const line of lines){
+      if(!line.trim()) continue;
+      try{
+        const ev = JSON.parse(line);
+        handleNestEvent(ev, items, sheetW, sheetH);
+        if(ev.type === 'done') finalResult = ev;
+        if(ev.type === 'error') throw new Error(ev.error);
+      } catch(e){ if(e.message && !e.message.startsWith('JSON')) throw e; }
+    }
+  }
+
+  if(!finalResult) throw new Error('Server closed without result');
+
+  return finalResult.sheets.map((s,si)=>({
     index: s.index||si+1,
     placements: s.placements.map(pl=>({
       ...items[pl.idx],
-      x: pl.x,
-      y: pl.y,
+      x: pl.x, y: pl.y,
       rotation: pl.rotation||0,
-      // Use server-returned placed dimensions (accounts for rotation)
       w: pl.placedW || items[pl.idx]?.w || 0,
       h: pl.placedH || items[pl.idx]?.h || 0,
     })),
-    utilisation: calcUtil(s.placements.map(pl=>({...items[pl.idx], actualArea: items[pl.idx]?.actualArea})), sheetW, sheetH),
+    utilisation: calcUtil(s.placements.map(pl=>({...items[pl.idx], actualArea:items[pl.idx]?.actualArea})), sheetW, sheetH),
   }));
 }
 
+// ── Handle a single streaming event from the server ──────────────────────────
+function handleNestEvent(ev, items, sheetW, sheetH){
+  const body = document.getElementById('nest-body');
+  if(!body) return;
+
+  if(ev.type === 'start'){
+    // Build the pass-block skeleton — one block per pass (pass 3 added lazily)
+    body.innerHTML = `
+      <div class="nest-progress-wrap">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+          <div class="spinner"></div>
+          <div>
+            <p style="font-weight:500">NFP two-pass nesting</p>
+            <p id="nest-phase-label" class="muted-sm" style="margin-top:2px">
+              ${ev.rectCount} rectangular · ${ev.roundedCount} rounded · ${ev.totalParts} total
+            </p>
+          </div>
+        </div>
+        <div id="nest-passes"></div>
+      </div>`;
+    return;
+  }
+
+  if(ev.type === 'pass'){
+    const passes = document.getElementById('nest-passes');
+    if(!passes) return;
+    const label = ev.pass===1 ? 'Pass 1 — rectangles'
+                : ev.pass===2 ? 'Pass 2 — rounded fills gaps'
+                : 'Pass 3 — overflow';
+    const rotLabel = `${ev.rotations} rotations`;
+    passes.insertAdjacentHTML('beforeend', `
+      <div class="pass-block" id="pass-block-${ev.pass}">
+        <div class="pass-header">
+          <span class="pass-badge active" id="pass-badge-${ev.pass}">Pass ${ev.pass}</span>
+          <span class="pass-label">${label}</span>
+          <span class="pass-count" id="pass-count-${ev.pass}">0 / ${ev.total} · ${rotLabel}</span>
+        </div>
+        <div class="pass-bar-wrap"><div class="pass-bar amber" id="pass-bar-${ev.pass}"></div></div>
+        <div class="pass-body" id="pass-body-${ev.pass}"></div>
+      </div>`);
+    const label2 = document.getElementById('nest-phase-label');
+    if(label2) label2.textContent = label;
+    return;
+  }
+
+  if(ev.type === 'placed'){
+    // Update the pass progress bar and count
+    const pct = ev.total > 0 ? Math.round((ev.placed/ev.total)*100) : 0;
+    const bar = document.getElementById(`pass-bar-${ev.pass}`);
+    if(bar) bar.style.width = pct+'%';
+    const count = document.getElementById(`pass-count-${ev.pass}`);
+    if(count) count.textContent = `${ev.placed} / ${ev.total} placed`;
+
+    // Add or update a sheet row in the pass body
+    const passBody = document.getElementById(`pass-body-${ev.pass}`);
+    if(!passBody) return;
+    let sheetRow = document.getElementById(`sr-${ev.pass}-${ev.sheet}`);
+    if(!sheetRow){
+      passBody.insertAdjacentHTML('beforeend',`
+        <div class="sheet-row" id="sr-${ev.pass}-${ev.sheet}">
+          <span class="sheet-row-num">Sheet ${ev.sheet}</span>
+          <div class="sheet-row-bar-wrap"><div class="sheet-row-bar active" id="srb-${ev.pass}-${ev.sheet}" style="width:5%"></div></div>
+          <span class="sheet-row-pct" id="srp-${ev.pass}-${ev.sheet}">—</span>
+          <span class="sheet-row-parts" id="srn-${ev.pass}-${ev.sheet}">${ev.placed} part${ev.placed!==1?'s':''}</span>
+        </div>`);
+    } else {
+      const nEl = document.getElementById(`srn-${ev.pass}-${ev.sheet}`);
+      if(nEl) nEl.textContent = `${ev.placed} part${ev.placed!==1?'s':''}`;
+    }
+    return;
+  }
+
+  if(ev.type === 'passdone'){
+    const bar   = document.getElementById(`pass-bar-${ev.pass}`);
+    const badge = document.getElementById(`pass-badge-${ev.pass}`);
+    const count = document.getElementById(`pass-count-${ev.pass}`);
+    if(bar)  { bar.style.width='100%'; bar.classList.remove('amber'); bar.classList.add('green'); }
+    if(badge){ badge.textContent=`✓ Pass ${ev.pass}`; badge.classList.remove('active'); badge.classList.add('done'); }
+    if(count){ count.textContent=`${ev.placed} placed · ${ev.sheets} sheet${ev.sheets!==1?'s':''}${ev.overflow?` · ${ev.overflow} overflow`:''}`;  }
+    return;
+  }
+
+  if(ev.type === 'done'){
+    const spinner = document.querySelector('.nest-progress-wrap .spinner');
+    if(spinner) spinner.style.display='none';
+    const label2 = document.getElementById('nest-phase-label');
+    if(label2){
+      const total = ev.sheets?.length||0;
+      label2.textContent = `Complete — ${total} sheet${total!==1?'s':''}`;
+      label2.style.color = 'var(--green)';
+    }
+  }
+}
+
 async function runNesting(onlyGroupIdx=null){
-  // If nesting just one group, delegate to nestSingleGroup
   if(onlyGroupIdx !== null){
     const body=document.getElementById('nest-body');
     const g=groupByMaterial(state.parts)[onlyGroupIdx];
     if(!g) return;
-    body.innerHTML=`<div class="spinner-wrap"><div class="spinner"></div><p>Nesting ${g.material} ${g.thickness}…</p></div>`;
+    // Clear detail area so streaming events render fresh
+    body.innerHTML=`<div id="nest-body-inner" style="padding:4px 0"></div>`;
     await nestSingleGroup(onlyGroupIdx);
     return;
   }
 
   const defaultSizeIdx = parseInt(document.getElementById('sheet-size-sel').value)||0;
   const body = document.getElementById('nest-body');
-  // Don't re-check server on every nest run — checked on page load
-
-  const useDeepnest = true; // Always use Railway
-  const engineName = 'NFP nesting (Railway)';
-
-  const allItems=[];
-  for(const p of state.parts) for(let i=0;i<p.quantity;i++) allItems.push(p);
-
   const groups = groupByMaterial(state.parts);
 
-  // Build group tracker rows
+  // Group summary rows at the top — updated as each group completes
   const groupRows = groups.map((g,i) => {
     const totalPcs = g.parts.reduce((a,p)=>a+p.quantity,0);
     return `<div class="progress-group" id="pg-${i}">
@@ -1976,28 +2094,19 @@ async function runNesting(onlyGroupIdx=null){
   }).join('');
 
   body.innerHTML = `
-    <div class="nest-progress-wrap">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <div class="spinner"></div>
-        <div>
-          <p style="font-weight:500">Nesting with <strong>${engineName}</strong></p>
-          <p id="nest-timer-label" class="muted-sm" style="margin-top:3px">Starting…</p>
-        </div>
-      </div>
-      <div style="width:100%;height:4px;background:var(--border);border-radius:2px;margin-bottom:16px;overflow:hidden">
-        <div id="nest-progress-bar" style="height:100%;background:var(--text);width:0%;transition:width .5s"></div>
-      </div>
-      <div class="progress-groups">${groupRows}</div>
+    <div style="padding:16px 20px;max-width:640px">
+      <div class="progress-groups" style="margin-bottom:16px">${groupRows}</div>
+      <div id="active-nest-detail"></div>
     </div>`;
 
   // Read DXF geometry
   const geomCache={};
   for(const p of state.parts){
     if(!p.dxfFile) continue;
-    const key = p.dxfFile.name;
+    const key=p.dxfFile.name;
     if(!geomCache[key]){
-      const geom = await readDxfFile(p.dxfFile);
-      geomCache[key] = geom || sizeFromProfile(p.profile, p.partName);
+      const geom=await readDxfFile(p.dxfFile);
+      geomCache[key]=geom||sizeFromProfile(p.profile,p.partName);
     }
   }
 
@@ -2007,27 +2116,24 @@ async function runNesting(onlyGroupIdx=null){
 
   const nestResults=[];
   let groupIdx=0;
+
   for(const g of groups){
-    const gi=groupIdx;
-    groupIdx++;
+    const gi=groupIdx++;
 
-    // Update progress tracker
-    const pgStatus = document.getElementById(`pg-status-${gi}`);
-    const pgRow = document.getElementById(`pg-${gi}`);
-    if(pgStatus){ pgStatus.textContent = 'nesting…'; pgStatus.style.color='var(--amber)'; }
+    // Mark this group as active in the summary list
+    const pgStatus=document.getElementById(`pg-status-${gi}`);
+    const pgRow=document.getElementById(`pg-${gi}`);
+    if(pgStatus){ pgStatus.textContent='nesting…'; pgStatus.style.color='var(--amber)'; }
     if(pgRow) pgRow.style.background='var(--amber-bg)';
-    const bar=document.getElementById('nest-progress-bar');
-    if(bar) bar.style.width=Math.round((gi/groups.length)*100)+'%';
 
-    // Use per-group sheet size if set, otherwise use default
     const selEl=document.getElementById('sheet-sel-'+gi);
     const sizeIdx=selEl?parseInt(selEl.value)||0:defaultSizeIdx;
     const sheet=SHEET_SIZES[sizeIdx];
 
     const items=[];
     for(const p of g.parts){
-      const geom = geomCache[p.dxfFile?.name] || sizeFromProfile(p.profile, p.partName);
-      const actualArea = estimatePartArea(geom);
+      const geom=geomCache[p.dxfFile?.name]||sizeFromProfile(p.profile,p.partName);
+      const actualArea=estimatePartArea(geom);
       for(let i=0;i<(p.quantity||1);i++){
         items.push({
           partId:p.id, partName:p.partName, dxfFile:p.dxfFile,
@@ -2039,15 +2145,16 @@ async function runNesting(onlyGroupIdx=null){
     }
     items.sort((a,b)=>(b.actualArea||b.w*b.h)-(a.actualArea||a.w*a.h));
 
-    const timerEl=document.getElementById('nest-timer-label');
-    if(timerEl) timerEl.textContent=`Group ${groupIdx}/${groups.length}: ${g.material} ${g.thickness} (${items.length} parts) — ${sheet.label}`;
+    // Redirect streaming events into the detail area
+    const detail=document.getElementById('active-nest-detail');
+    if(detail) detail.innerHTML='';
+    // Temporarily override nest-body so handleNestEvent targets the detail div
+    const _orig=document.getElementById('nest-body');
+    const _proxy={ getElementById: id => id==='nest-body' ? detail : document.getElementById(id) };
 
     let sheets;
     try{
-      sheets = await runDeepnest(items, sheet.w, sheet.h, (pct)=>{
-        const bar=document.getElementById('nest-progress-bar');
-        if(bar) bar.style.width=pct+'%';
-      });
+      sheets = await runDeepnest(items, sheet.w, sheet.h, ()=>{});
     } catch(e){
       console.error('Nesting error:', e);
       throw new Error(`Nesting failed for ${g.material} ${g.thickness}: ${e.message}`);
@@ -2055,15 +2162,13 @@ async function runNesting(onlyGroupIdx=null){
 
     nestResults.push({...g, sheetSize:sheet, sheets, totalParts:items.length});
 
-    // Mark group done in progress tracker
-    const pgStatusDone = document.getElementById(`pg-status-${gi}`);
-    const pgRowDone = document.getElementById(`pg-${gi}`);
-    if(pgStatusDone){
-      const util = Math.round(sheets.reduce((a,s)=>a+s.utilisation,0)/(sheets.length||1));
-      pgStatusDone.textContent = `✓ ${sheets.length} sheet${sheets.length!==1?'s':''} · ${util}%`;
-      pgStatusDone.style.color='var(--green)';
+    // Mark group done
+    if(pgStatus){
+      const util=Math.round(sheets.reduce((a,s)=>a+s.utilisation,0)/(sheets.length||1));
+      pgStatus.textContent=`✓ ${sheets.length} sheet${sheets.length!==1?'s':''} · ${util}%`;
+      pgStatus.style.color='var(--green)';
     }
-    if(pgRowDone) pgRowDone.style.background='var(--green-bg)';
+    if(pgRow) pgRow.style.background='var(--green-bg)';
   }
 
   state.nestResults=nestResults;
@@ -2118,7 +2223,10 @@ async function nestSingleGroup(groupIdx){
   }
   items.sort((a,b)=>(b.actualArea||b.w*b.h)-(a.actualArea||a.w*a.h));
 
-  const useDeepnest=deepnestAvailable;
+  // Clear body so streaming events from runDeepnest render fresh
+  const body=document.getElementById('nest-body');
+  if(body) body.innerHTML='';
+
   let sheets;
   try{
     sheets = await runDeepnest(items, sheet.w, sheet.h, ()=>{});

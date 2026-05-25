@@ -2015,7 +2015,6 @@ async function runNesting(onlyGroupIdx=null){
     }
   }
 
-  const groups = groupByMaterial(state.parts);
   const colorMap={};let ci=0;
   for(const g of groups) for(const p of g.parts) if(!colorMap[p.partName]) colorMap[p.partName]=PART_COLORS[ci++%PART_COLORS.length];
   state.partColorMap=colorMap;

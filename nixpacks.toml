@@ -1,5 +1,0 @@
-# nixpacks.toml
-# Tells Railway to use Node.js 20
-
-[phases.setup]
-nixPkgs = ["nodejs_20"]

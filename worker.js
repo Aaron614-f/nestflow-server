@@ -1,13 +1,11 @@
 /**
- * NestFlow — Nesting Worker v4.2
- * Runs as a disposable child process — spawned per job, exits when done.
- * The OS reclaims ALL memory (including ClipperLib C++ allocations) on exit.
+ * NestFlow — Nesting Worker v4.3
+ * Child process — spawned per job, exits when done.
+ * OS reclaims all memory on exit.
  *
- * Uses true polygon collision detection via ClipperLib — safe here because
- * any memory leak dies with the process at job end.
- *
- * Placement strategy: Bottom-Left fit with polygon-accurate overlap check.
- * Candidates generated from occupied boundary vertices (not a grid).
+ * Spacing handled arithmetically — NO ClipperOffset.
+ * Overlap detection: AABB first, then Clipper intersection only as final check.
+ * Clipper intersection is cheap (no offset, no path expansion).
  */
 
 const ClipperLib = require('clipper-lib');
@@ -43,26 +41,22 @@ function runNesting({ sheet, parts, spacing = 2 }, emit) {
 
   emit({ type: 'start', rectCount: rectPolys.length, roundedCount: roundedPolys.length, totalParts: polygons.length });
 
-  // Pass 1 — rectangles, rotations=4
   emit({ type: 'pass', pass: 1, label: 'Rectangular parts', total: rectPolys.length, rotations: 4 });
-  const { sheets: s1 } = nestPolygons(rectPolys, sw, sh, pad, 4, null,
-    (placed, total, sn) => emit({ type: 'placed', pass: 1, placed, total, sheet: sn }));
+  const { sheets: s1 } = nest(rectPolys, sw, sh, pad, 4, null,
+    (pl, tot, sn) => emit({ type: 'placed', pass: 1, placed: pl, total: tot, sheet: sn }));
   emit({ type: 'passdone', pass: 1, sheets: s1.length, placed: rectPolys.length });
 
-  // Pass 2 — rounded fills gaps, rotations=8
   emit({ type: 'pass', pass: 2, label: 'Rounded parts — filling gaps', total: roundedPolys.length, rotations: 8 });
   const seed = buildSeed(s1, pad);
-  const { sheets: s2, overflow } = nestPolygons(roundedPolys, sw, sh, pad, 8, seed,
-    (placed, total, sn) => emit({ type: 'placed', pass: 2, placed, total, sheet: sn }));
+  const { sheets: s2, overflow } = nest(roundedPolys, sw, sh, pad, 8, seed,
+    (pl, tot, sn) => emit({ type: 'placed', pass: 2, placed: pl, total: tot, sheet: sn }));
   emit({ type: 'passdone', pass: 2, sheets: s2.length, placed: roundedPolys.length - overflow.length, overflow: overflow.length });
 
-  // Pass 3 — overflow
   let s3 = [];
   if (overflow.length) {
     emit({ type: 'pass', pass: 3, label: 'Overflow — fresh sheets', total: overflow.length, rotations: 8 });
-    const r3 = nestPolygons(overflow, sw, sh, pad, 8, null,
-      (placed, total, sn) => emit({ type: 'placed', pass: 3, placed, total, sheet: sn }));
-    s3 = r3.sheets;
+    s3 = nest(overflow, sw, sh, pad, 8, null,
+      (pl, tot, sn) => emit({ type: 'placed', pass: 3, placed: pl, total: tot, sheet: sn })).sheets;
     emit({ type: 'passdone', pass: 3, sheets: s3.length, placed: overflow.length, overflow: 0 });
   }
 
@@ -71,12 +65,13 @@ function runNesting({ sheet, parts, spacing = 2 }, emit) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core nesting engine
-// occupied = array of placed items: { pts (polygon), bb (bbox), cx (clipper path) }
+// Spacing is handled by shrinking the available sheet area and checking
+// candidate positions with a pad buffer — no polygon expansion needed.
+// occupied = [{ pts, bb }]  — original polygon + its bbox, no expansion
 // ─────────────────────────────────────────────────────────────────────────────
-function nestPolygons(polygons, sw, sh, pad, rotations, seed = null, onProgress = null) {
+function nest(polygons, sw, sh, pad, rotations, seed = null, onProgress = null) {
   if (!polygons.length) return { sheets: [], overflow: [] };
 
-  // Pre-compute rotation variants
   const variants = polygons.map(poly => {
     const seen = new Set();
     const out = [];
@@ -85,15 +80,11 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seed = null, onProgress 
       const rotated = normalisePts(rotatePoly(poly.pts, angle));
       const bb = bbox(rotated);
       const key = `${Math.round(bb.w)}_${Math.round(bb.h)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push({ angle, pts: rotated, bb });
-      }
+      if (!seen.has(key)) { seen.add(key); out.push({ angle, pts: rotated, bb }); }
     }
     return out;
   });
 
-  // Sort largest first
   const order = polygons.map((_, i) => i)
     .sort((a, b) => (polygons[b].w * polygons[b].h) - (polygons[a].w * polygons[a].h));
 
@@ -117,36 +108,36 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seed = null, onProgress 
         if (vw + pad * 2 > sw || vh + pad * 2 > sh) continue;
 
         // Candidate positions: sheet corners + edges of placed items
-        const candidates = [
+        // All positions include the pad gap built in
+        const cands = [
           { x: pad, y: pad },
           { x: sw - vw - pad, y: pad },
           { x: pad, y: sh - vh - pad },
           { x: sw - vw - pad, y: sh - vh - pad },
         ];
         for (const o of occupied) {
-          const r = o.bb;
-          candidates.push(
-            { x: r.maxX + pad,       y: r.minY         },
-            { x: r.minX,             y: r.maxY + pad   },
-            { x: r.maxX + pad,       y: r.maxY + pad   },
-            { x: r.minX - vw - pad,  y: r.minY         },
-            { x: r.minX,             y: r.minY - vh - pad },
+          const ob = o.bb;
+          // Snap to right/below/corner of each placed item (with pad gap)
+          cands.push(
+            { x: ob.maxX + pad,      y: ob.minY          },
+            { x: ob.minX,            y: ob.maxY + pad    },
+            { x: ob.maxX + pad,      y: ob.maxY + pad    },
+            { x: ob.minX - vw - pad, y: ob.minY          },
+            { x: ob.minX,            y: ob.minY - vh - pad },
           );
         }
 
-        for (const { x, y } of candidates) {
-          // Quick bounds check first (cheap)
+        for (const { x, y } of cands) {
           if (x < pad - 0.01 || y < pad - 0.01) continue;
           if (x + vw > sw - pad + 0.01) continue;
           if (y + vh > sh - pad + 0.01) continue;
 
-          // Quick AABB check (fast elimination)
-          const candidateBB = { minX: x, minY: y, maxX: x + vw, maxY: y + vh };
-          if (aabbOverlapsAny(candidateBB, occupied)) continue;
+          // AABB check — includes pad gap
+          if (aabbHits(x - pad, y - pad, vw + pad * 2, vh + pad * 2, occupied)) continue;
 
-          // Full polygon check (accurate, only runs when AABB passes)
+          // Polygon intersection check (no offset — pad handled by AABB above)
           const shifted = v.pts.map(p => ({ x: p.x + x, y: p.y + y }));
-          if (polyOverlapsAny(shifted, occupied, pad)) continue;
+          if (polyHits(shifted, occupied)) continue;
 
           const score = y * sw + x;
           if (score < bestScore) {
@@ -158,9 +149,11 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seed = null, onProgress 
 
       if (best) {
         placements.push(best);
-        const expandedPts = offsetPoly(best.pts, pad);
-        const ebb = bboxFromClipper(expandedPts);
-        occupied.push({ pts: best.pts, expandedPts, bb: ebb });
+        const placedBB = {
+          minX: best.x, minY: best.y,
+          maxX: best.x + best.w, maxY: best.y + best.h,
+        };
+        occupied.push({ pts: best.pts, bb: placedBB });
         totalPlaced++;
         if (onProgress) onProgress(totalPlaced, polygons.length, sheetNum);
       } else {
@@ -190,69 +183,51 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seed = null, onProgress 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Collision detection — two stage: AABB first, polygon second
+// Collision: AABB fast filter then Clipper polygon intersection
+// No ClipperOffset anywhere — spacing handled arithmetically above
 // ─────────────────────────────────────────────────────────────────────────────
-function aabbOverlapsAny(bb, occupied) {
+function aabbHits(x, y, w, h, occupied) {
   for (const o of occupied) {
-    const ob = o.bb;
-    if (bb.minX < ob.maxX && bb.maxX > ob.minX &&
-        bb.minY < ob.maxY && bb.maxY > ob.minY) return true;
+    const b = o.bb;
+    if (x < b.maxX && x + w > b.minX && y < b.maxY && y + h > b.minY) return true;
   }
   return false;
 }
 
-function polyOverlapsAny(pts, occupied, pad) {
-  const cp = toClipperPoly(pts);
+function polyHits(pts, occupied) {
+  const cpA = toCp(pts);
   for (const o of occupied) {
-    // Use the expanded (padded) polygon of the placed item as the obstacle
-    const obstacle = o.expandedPts || toClipperPoly(o.pts);
-    if (clipperIntersects(cp, obstacle)) return true;
+    if (clipperOverlap(cpA, toCp(o.pts))) return true;
   }
   return false;
 }
 
-function clipperIntersects(pathA, pathB) {
+function clipperOverlap(a, b) {
   try {
-    const clipper = new ClipperLib.Clipper();
-    clipper.AddPath(pathA, ClipperLib.PolyType.ptSubject, true);
-    clipper.AddPath(pathB, ClipperLib.PolyType.ptClip,    true);
+    const cl = new ClipperLib.Clipper();
+    cl.AddPath(a, ClipperLib.PolyType.ptSubject, true);
+    cl.AddPath(b, ClipperLib.PolyType.ptClip,    true);
     const sol = new ClipperLib.Paths();
-    clipper.Execute(ClipperLib.ClipType.ctIntersection, sol);
+    cl.Execute(ClipperLib.ClipType.ctIntersection, sol);
     if (!sol?.length) return false;
-    const area = Math.abs(ClipperLib.Clipper.Area(sol[0])) / (SCALE * SCALE);
-    return area > 0.01;
+    return Math.abs(ClipperLib.Clipper.Area(sol[0])) / (SCALE * SCALE) > 0.01;
   } catch (e) { return false; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Polygon offset — expand a polygon outward by delta mm
-// ─────────────────────────────────────────────────────────────────────────────
-function offsetPoly(pts, delta) {
-  if (delta <= 0) return toClipperPoly(pts);
-  try {
-    const co = new ClipperLib.ClipperOffset();
-    co.AddPath(toClipperPoly(pts), ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
-    const sol = new ClipperLib.Paths();
-    co.Execute(sol, delta * SCALE);
-    return sol?.[0] || toClipperPoly(pts);
-  } catch (e) { return toClipperPoly(pts); }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Seed occupied list from a prior pass's last sheet
+// Seed from prior pass
 // ─────────────────────────────────────────────────────────────────────────────
 function buildSeed(sheets, pad) {
   if (!sheets.length) return null;
   return sheets[sheets.length - 1].map(p => {
     const pts = rectPts(p.placedW, p.placedH).map(pt => ({ x: pt.x + p.x, y: pt.y + p.y }));
-    const expandedPts = offsetPoly(pts, pad);
-    return { pts, expandedPts, bb: bboxFromClipper(expandedPts) };
+    return {
+      pts,
+      bb: { minX: p.x, minY: p.y, maxX: p.x + p.placedW, maxY: p.y + p.placedH },
+    };
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Merge passes into response format
-// ─────────────────────────────────────────────────────────────────────────────
 function mergeSheets(p1, p2, p3) {
   const n = Math.max(p1.length, p2.length);
   const merged = [];
@@ -262,44 +237,32 @@ function mergeSheets(p1, p2, p3) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Geometry helpers
+// Geometry
 // ─────────────────────────────────────────────────────────────────────────────
-function rectPts(w, h) {
-  return [{ x:0,y:0 },{ x:w,y:0 },{ x:w,y:h },{ x:0,y:h }];
-}
+function rectPts(w, h) { return [{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}]; }
 function bbox(pts) {
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   for (const p of pts) {
-    if (p.x<minX)minX=p.x; if (p.x>maxX)maxX=p.x;
-    if (p.y<minY)minY=p.y; if (p.y>maxY)maxY=p.y;
+    if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x;
+    if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y;
   }
-  return { minX,minY,maxX,maxY,w:maxX-minX,h:maxY-minY };
-}
-function bboxFromClipper(path) {
-  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-  for (const p of path) {
-    const x=p.X/SCALE, y=p.Y/SCALE;
-    if (x<minX)minX=x; if (x>maxX)maxX=x;
-    if (y<minY)minY=y; if (y>maxY)maxY=y;
-  }
-  return { minX,minY,maxX,maxY,w:maxX-minX,h:maxY-minY };
+  return {minX,minY,maxX,maxY,w:maxX-minX,h:maxY-minY};
 }
 function normalisePts(pts) {
-  const bb=bbox(pts);
-  return pts.map(p=>({ x:p.x-bb.minX, y:p.y-bb.minY }));
+  const b=bbox(pts); return pts.map(p=>({x:p.x-b.minX,y:p.y-b.minY}));
 }
 function rotatePoly(pts, deg) {
-  if (deg===0) return pts;
+  if(deg===0) return pts;
   const rad=deg*Math.PI/180;
   const cx=pts.reduce((a,p)=>a+p.x,0)/pts.length;
   const cy=pts.reduce((a,p)=>a+p.y,0)/pts.length;
   const cos=Math.cos(rad),sin=Math.sin(rad);
   return pts.map(p=>({
-    x: cx+(p.x-cx)*cos-(p.y-cy)*sin,
-    y: cy+(p.x-cx)*sin+(p.y-cy)*cos,
+    x:cx+(p.x-cx)*cos-(p.y-cy)*sin,
+    y:cy+(p.x-cx)*sin+(p.y-cy)*cos,
   }));
 }
-function toClipperPoly(pts) {
-  return pts.map(p=>({ X:Math.round(p.x*SCALE), Y:Math.round(p.y*SCALE) }));
+function toCp(pts) {
+  return pts.map(p=>({X:Math.round(p.x*SCALE),Y:Math.round(p.y*SCALE)}));
 }
 function r3(n) { return Math.round(n*1000)/1000; }

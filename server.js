@@ -227,7 +227,14 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null, onP
       if (bestPlacement) {
         placements.push(bestPlacement);
         const placed = bestPlacement.pts.map(p => ({ x: p.x + bestPlacement.x, y: p.y + bestPlacement.y }));
-        occupied.push(...expandPoly(placed, pad));
+        const expanded = expandPoly(placed, pad);
+        // Union the new footprint into the existing occupied region so the
+        // occupied array stays as ONE merged polygon — not N separate paths.
+        // This is the key memory fix: without it, occupied grows unboundedly
+        // and the Minkowski sum blows up RAM by part ~20.
+        const merged = unionPaths([...occupied, ...expanded]);
+        occupied.length = 0;
+        occupied.push(...merged);
         totalPlaced++;
         if (onProgress) onProgress(totalPlaced, polygons.length, sheetNum);
       } else {
@@ -314,15 +321,16 @@ function minkowskiSum(pathA, pathB) {
 
 function buildOccupiedFromSheets(sheets, sw, sh, pad) {
   return sheets.map(placements => {
-    const occupied = [];
+    let occupied = [];
     for (const p of placements) {
       const rectPts = [
-        { x: p.x,            y: p.y },
+        { x: p.x,             y: p.y },
         { x: p.x + p.placedW, y: p.y },
         { x: p.x + p.placedW, y: p.y + p.placedH },
-        { x: p.x,            y: p.y + p.placedH },
+        { x: p.x,             y: p.y + p.placedH },
       ];
-      occupied.push(...expandPoly(rectPts, pad));
+      const expanded = expandPoly(rectPts, pad);
+      occupied = unionPaths([...occupied, ...expanded]);
     }
     return occupied;
   });
@@ -401,6 +409,27 @@ function overlapsOccupied(candidate,occupied) {
   if (!solution||!solution.length) return false;
   return Math.abs(ClipperLib.Clipper.Area(solution[0]))/(SCALE*SCALE)>0.01;
 }
+/**
+ * Union a list of Clipper paths into a single merged path.
+ * This keeps the occupied region as ONE polygon regardless of how many
+ * parts have been placed, preventing exponential memory growth.
+ */
+function unionPaths(paths) {
+  if (!paths || paths.length === 0) return [];
+  if (paths.length === 1) return paths;
+  try {
+    const clipper = new ClipperLib.Clipper();
+    clipper.AddPaths(paths, ClipperLib.PolyType.ptSubject, true);
+    const solution = new ClipperLib.Paths();
+    clipper.Execute(
+      ClipperLib.ClipType.ctUnion, solution,
+      ClipperLib.PolyFillType.pftNonZero,
+      ClipperLib.PolyFillType.pftNonZero
+    );
+    return solution.length ? solution : paths;
+  } catch (e) { return paths; }
+}
+
 function json(res,status,data) {
   res.writeHead(status,{'Content-Type':'application/json'});
   res.end(JSON.stringify(data));

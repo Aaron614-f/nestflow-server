@@ -227,14 +227,16 @@ function nestPolygons(polygons, sw, sh, pad, rotations, seedOccupied = null, onP
       if (bestPlacement) {
         placements.push(bestPlacement);
         const placed = bestPlacement.pts.map(p => ({ x: p.x + bestPlacement.x, y: p.y + bestPlacement.y }));
+        // Just append — the boundary offset candidate method reads raw paths,
+        // no union needed. Keep a vertex cap so memory stays bounded.
         const expanded = expandPoly(placed, pad);
-        // Union the new footprint into the existing occupied region so the
-        // occupied array stays as ONE merged polygon — not N separate paths.
-        // This is the key memory fix: without it, occupied grows unboundedly
-        // and the Minkowski sum blows up RAM by part ~20.
-        const merged = unionPaths([...occupied, ...expanded]);
-        occupied.length = 0;
-        occupied.push(...merged);
+        for (const path of expanded) occupied.push(path);
+        // Cap total vertices to prevent memory growth on very large jobs
+        if (occupied.length > 200) {
+          const merged = mergeOccupiedPaths(occupied);
+          occupied.length = 0;
+          for (const path of merged) occupied.push(path);
+        }
         totalPlaced++;
         if (onProgress) onProgress(totalPlaced, polygons.length, sheetNum);
       } else {
@@ -321,7 +323,7 @@ function getCandidatePositions(pts, occupied, sw, sh, pad) {
 
 function buildOccupiedFromSheets(sheets, sw, sh, pad) {
   return sheets.map(placements => {
-    let occupied = [];
+    const occupied = [];
     for (const p of placements) {
       const rectPts = [
         { x: p.x,             y: p.y },
@@ -329,9 +331,9 @@ function buildOccupiedFromSheets(sheets, sw, sh, pad) {
         { x: p.x + p.placedW, y: p.y + p.placedH },
         { x: p.x,             y: p.y + p.placedH },
       ];
-      const expanded = expandPoly(rectPts, pad);
-      occupied = unionPaths([...occupied, ...expanded]);
+      for (const path of expandPoly(rectPts, pad)) occupied.push(path);
     }
+    if (occupied.length > 200) return mergeOccupiedPaths(occupied);
     return occupied;
   });
 }
@@ -410,13 +412,12 @@ function overlapsOccupied(candidate,occupied) {
   return Math.abs(ClipperLib.Clipper.Area(solution[0]))/(SCALE*SCALE)>0.01;
 }
 /**
- * Union a list of Clipper paths into a single merged path.
- * This keeps the occupied region as ONE polygon regardless of how many
- * parts have been placed, preventing exponential memory growth.
+ * Merge occupied paths only when the list gets too long (>200 paths).
+ * Uses Clipper union but on a capped-size list, so memory stays bounded.
+ * Called lazily — not after every placement.
  */
-function unionPaths(paths) {
+function mergeOccupiedPaths(paths) {
   if (!paths || paths.length === 0) return [];
-  if (paths.length === 1) return paths;
   try {
     const clipper = new ClipperLib.Clipper();
     clipper.AddPaths(paths, ClipperLib.PolyType.ptSubject, true);
@@ -430,7 +431,7 @@ function unionPaths(paths) {
   } catch (e) { return paths; }
 }
 
-function json(res,status,data) {
-  res.writeHead(status,{'Content-Type':'application/json'});
+function json(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }

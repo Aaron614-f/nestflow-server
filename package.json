@@ -1,7 +1,7 @@
 {
   "name": "nestflow-server",
-  "version": "3.0.0",
-  "description": "NestFlow nesting server — NFP two-pass nesting in Node.js",
+  "version": "4.1.0",
+  "description": "NestFlow nesting server — worker process per job",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

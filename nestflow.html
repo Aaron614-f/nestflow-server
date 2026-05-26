@@ -417,6 +417,7 @@ tr.row-unmatched:hover td{background:#ffecec!important}
         <span id="match-hint" class="warn-txt"></span>
         <div class="bbar-right">
           <button class="btn" onclick="goTo(0)">← Back</button>
+          <button class="btn" id="btn-dl-thickness" onclick="downloadDxfByThickness()" style="display:none">↓ DXF by thickness</button>
           <button class="btn btn-primary" id="btn-nest" disabled onclick="goNest()">Run nesting →</button>
         </div>
       </div>
@@ -1071,6 +1072,10 @@ function updateMatchBar(){
   const issues = unmatched + review;
   const hint = document.getElementById('match-hint');
   const btn = document.getElementById('btn-nest');
+  const dlBtn = document.getElementById('btn-dl-thickness');
+  // Show DXF by thickness button if any parts have matched DXF files
+  const anyMatched = state.parts.some(p=>p.dxfFile);
+  if(dlBtn) dlBtn.style.display = anyMatched ? '' : 'none';
   if(issues > 0){
     hint.textContent = `Resolve ${issues} item${issues!==1?'s':''} before proceeding`;
     hint.className = 'warn-txt';
@@ -1092,6 +1097,84 @@ function downloadPartDxf(partId){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
+// ── Download DXF files organised into folders by thickness ──
+async function downloadDxfByThickness(){
+  if(typeof JSZip === 'undefined'){
+    alert('JSZip not loaded — cannot create ZIP'); return;
+  }
+
+  const job = document.getElementById('job-name')?.value || 'JOB';
+  const zip = new JSZip();
+
+  // Group parts by thickness
+  const byThickness = {};
+  for(const p of state.parts){
+    if(!p.dxfFile?._fileRef) continue;
+    const key = p.thickness || 'unknown';
+    if(!byThickness[key]) byThickness[key] = [];
+    byThickness[key].push(p);
+  }
+
+  const thicknesses = Object.keys(byThickness);
+  if(!thicknesses.length){
+    alert('No matched DXF files to download.'); return;
+  }
+
+  // Read each unique DXF file once into a buffer cache
+  const bufCache = {};
+  for(const parts of Object.values(byThickness)){
+    for(const p of parts){
+      const name = p.dxfFile.name;
+      if(!bufCache[name]){
+        try{ bufCache[name] = await p.dxfFile._fileRef.arrayBuffer(); }
+        catch(e){ console.warn('Could not read', name, e); }
+      }
+    }
+  }
+
+  // Build ZIP: one folder per thickness
+  // Each part gets qty copies named partName_1.dxf through partName_N.dxf
+  const summaryLines = [
+    `NestFlow — DXF files by thickness (quantity copies)`,
+    `Job: ${job}`,
+    `Generated: ${new Date().toLocaleString()}`,
+    '',
+  ];
+
+  for(const thickness of thicknesses){
+    const folder = zip.folder(`${job}_${thickness}`);
+    const parts = byThickness[thickness];
+    let totalFiles = 0;
+
+    summaryLines.push(`── ${thickness} ──`);
+
+    for(const p of parts){
+      const buf = bufCache[p.dxfFile.name];
+      if(!buf) continue;
+      const qty = p.quantity || 1;
+      const baseName = p.partName || p.dxfFile.name.replace(/\.dxf$/i, '');
+
+      for(let i = 1; i <= qty; i++){
+        folder.file(`${baseName}_${i}.dxf`, buf.slice(0));
+        totalFiles++;
+      }
+
+      summaryLines.push(`  ${baseName}  x${qty}  ->  ${baseName}_1.dxf ... ${baseName}_${qty}.dxf`);
+    }
+
+    summaryLines.push(`  Total files: ${totalFiles}`, '');
+  }
+
+  zip.file(`${job}_contents.txt`, summaryLines.join('\n'));
+
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${job}_DXF-by-thickness.zip`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
 // ── Part info popup ──
 function showPartInfo(partId){
   const p = state.parts.find(x=>x.id===partId);
@@ -1921,7 +2004,7 @@ async function runDeepnest(items, sheetW, sheetH, onProgress){
   const parts = items.map((item, idx)=>{
     const cutPoly=(item.polylines||[]).find(pl=>pl.layer?.toUpperCase()==='CUT')||(item.polylines||[])[0];
     const points = cutPoly
-      ? polylineToPoints(cutPoly.verts)
+      ? polylineToPoints(cutPoly.verts, 6)  // 6 steps per arc — enough for collision, keeps payload small
       : [{x:0,y:0},{x:item.w,y:0},{x:item.w,y:item.h},{x:0,y:item.h}];
     return { idx, partName:item.partName, w:item.w, h:item.h, points };
   });

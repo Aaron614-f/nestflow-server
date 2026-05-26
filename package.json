@@ -1,15 +1,9 @@
 {
   "name": "nestflow-server",
-  "version": "4.1.0",
-  "description": "NestFlow nesting server — worker process per job",
+  "version": "4.4.0",
+  "description": "NestFlow nesting server — SAT polygon collision, zero native deps",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "clipper-lib": "^6.4.2"
-  },
-  "engines": {
-    "node": ">=16.0.0"
-  }
+  "scripts": { "start": "node server.js" },
+  "dependencies": {},
+  "engines": { "node": ">=16.0.0" }
 }
